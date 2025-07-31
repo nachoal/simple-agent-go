@@ -152,12 +152,25 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		
 	case borderedResponseMsg:
 		m.isThinking = false
+		
+		// Handle special command cases
+		if msg.isQuit {
+			return m, tea.Quit
+		}
+		
+		if msg.isClear {
+			m.messages = []BorderedMessage{}
+			m.textarea.Focus()
+			return m, nil
+		}
+		
+		// Handle normal messages
 		if msg.err != nil {
 			m.messages = append(m.messages, BorderedMessage{
 				Role:    "error",
 				Content: fmt.Sprintf("Error: %v", msg.err),
 			})
-		} else {
+		} else if msg.content != "" {
 			m.messages = append(m.messages, BorderedMessage{
 				Role:    "assistant",
 				Content: msg.content,
@@ -276,8 +289,11 @@ func (m *BorderedTUI) sendMessage(input string) tea.Cmd {
 func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
 	switch strings.ToLower(strings.TrimSpace(cmd)) {
 	case "/exit", "/quit":
-		// This will be handled in Update
-		return borderedResponseMsg{content: "Goodbye!"}
+		// Return a special message type that will trigger quit
+		return borderedResponseMsg{content: "", isQuit: true}
+	case "/clear":
+		// Return a special message type that will trigger clear
+		return borderedResponseMsg{content: "", isClear: true}
 	case "/help":
 		help := `Commands:
   /help  - Show this help
@@ -309,6 +325,8 @@ Keyboard shortcuts:
 type borderedResponseMsg struct {
 	content string
 	err     error
+	isQuit  bool
+	isClear bool
 }
 
 // adjustTextareaHeight dynamically adjusts the textarea height based on content
