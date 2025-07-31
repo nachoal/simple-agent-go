@@ -268,9 +268,8 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Add description for local models
+	// Set OwnedBy for local models if not provided
 	for i := range response.Data {
-		response.Data[i].Description = "Local model running in LM Studio"
 		if response.Data[i].OwnedBy == "" {
 			response.Data[i].OwnedBy = "local"
 		}

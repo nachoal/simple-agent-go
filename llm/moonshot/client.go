@@ -130,29 +130,64 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 
 // ListModels returns available Moonshot models
 func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
-	// Moonshot doesn't have a models endpoint, return hardcoded list
-	models := []llm.Model{
-		{
-			ID:      "moonshot-v1-8k",
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "moonshot",
-			Description: "Moonshot v1 with 8K context window",
-		},
-		{
-			ID:      "moonshot-v1-32k",
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "moonshot",
-			Description: "Moonshot v1 with 32K context window",
-		},
-		{
-			ID:      "moonshot-v1-128k",
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "moonshot",
-			Description: "Moonshot v1 with 128K context window",
-		},
+	// Create request for models endpoint (OpenAI-compatible)
+	req, err := http.NewRequestWithContext(ctx, "GET", c.options.BaseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	req.Header.Set("Authorization", "Bearer "+c.options.APIKey)
+	req.Header.Set("Content-Type", "application/json")
+
+	// Execute request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Moonshot API error: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response with custom struct to handle Moonshot's permission format
+	var response struct {
+		Object string `json:"object"`
+		Data   []struct {
+			ID         string `json:"id"`
+			Object     string `json:"object"`
+			Created    int64  `json:"created"`
+			OwnedBy    string `json:"owned_by"`
+			Permission []struct {
+				Created      int    `json:"created"`
+				ID           string `json:"id"`
+				Object       string `json:"object"`
+				Organization string `json:"organization"`
+				Group        string `json:"group"`
+				IsBlocking   bool   `json:"is_blocking"`
+			} `json:"permission"`
+			Root   string `json:"root"`
+			Parent string `json:"parent"`
+		} `json:"data"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+	
+	// Convert to llm.Model format
+	models := make([]llm.Model, 0, len(response.Data))
+	for _, m := range response.Data {
+		model := llm.Model{
+			ID:      m.ID,
+			Object:  m.Object,
+			Created: m.Created,
+			OwnedBy: m.OwnedBy,
+		}
+		models = append(models, model)
 	}
 
 	return models, nil

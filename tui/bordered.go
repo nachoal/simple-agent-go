@@ -9,7 +9,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nachoal/simple-agent-go/agent"
+	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/llm"
+	"github.com/nachoal/simple-agent-go/tools/registry"
 )
 
 // BorderedTUI is a minimal TUI that matches the Python bordered_interface.py
@@ -25,6 +27,12 @@ type BorderedTUI struct {
 	isThinking    bool
 	err           error
 	initialized   bool // Track if we've received the first WindowSizeMsg
+	
+	// Model selection
+	selectingModel bool
+	modelSelector  tea.Model
+	providers      map[string]llm.Client
+	configManager  *config.Manager
 }
 
 // BorderedMessage represents a chat message
@@ -80,6 +88,14 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	}
 }
 
+// NewBorderedTUIWithProviders creates a new bordered TUI with provider and config support
+func NewBorderedTUIWithProviders(llmClient llm.Client, agentInstance agent.Agent, provider, model string, providers map[string]llm.Client, configManager *config.Manager) *BorderedTUI {
+	tui := NewBorderedTUI(llmClient, agentInstance, provider, model)
+	tui.providers = providers
+	tui.configManager = configManager
+	return tui
+}
+
 func (m BorderedTUI) Init() tea.Cmd {
 	// Initialize with a default width if not set
 	if m.width == 0 {
@@ -91,6 +107,60 @@ func (m BorderedTUI) Init() tea.Cmd {
 func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
+
+	// If we're in model selection mode, delegate to the model selector
+	if m.selectingModel && m.modelSelector != nil {
+		switch msg := msg.(type) {
+		case tea.WindowSizeMsg:
+			// Forward window size to model selector
+			m.modelSelector, cmd = m.modelSelector.Update(msg)
+			return m, cmd
+		case tea.KeyMsg:
+			// Allow escape or ctrl+c to exit model selection
+			if msg.String() == "esc" || msg.String() == "ctrl+c" {
+				m.selectingModel = false
+				m.modelSelector = nil
+				m.textarea.Focus()
+				return m, nil
+			}
+		case modelSelectedMsg:
+			// Model was selected, update our state
+			m.provider = msg.provider
+			m.model = msg.model
+			m.selectingModel = false
+			m.modelSelector = nil
+			
+			// Save to config if we have a config manager
+			if m.configManager != nil {
+				if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
+					m.messages = append(m.messages, BorderedMessage{
+						Role:    "error",
+						Content: fmt.Sprintf("Failed to save config: %v", err),
+					})
+				}
+			}
+			
+			// Update the agent with the new model
+			if newClient, ok := m.providers[msg.provider]; ok {
+				m.llmClient = newClient
+				m.agent = agent.New(newClient,
+					agent.WithMaxIterations(10),
+					agent.WithTemperature(0.7),
+				)
+			}
+			
+			m.messages = append(m.messages, BorderedMessage{
+				Role:    "command",
+				Content: fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model),
+			})
+			m.textarea.Focus()
+			return m, nil
+		}
+		
+		// Update the model selector
+		m.modelSelector, cmd = m.modelSelector.Update(msg)
+		return m, cmd
+	}
 
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -164,6 +234,29 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		
+		if msg.isModelSelect {
+			// Trigger model selection
+			m.selectingModel = true
+			m.textarea.Blur()
+			
+			// Create the model selector with a callback
+			onSelect := func(provider, model string) tea.Cmd {
+				return func() tea.Msg {
+					return modelSelectedMsg{provider: provider, model: model}
+				}
+			}
+			
+			m.modelSelector = NewModelSelector(m.providers, onSelect)
+			// Send the current window size to the model selector
+			if m.width > 0 && m.height > 0 {
+				m.modelSelector, _ = m.modelSelector.Update(tea.WindowSizeMsg{
+					Width:  m.width,
+					Height: m.height,
+				})
+			}
+			return m, m.modelSelector.Init()
+		}
+		
 		// Handle normal messages
 		if msg.err != nil {
 			m.messages = append(m.messages, BorderedMessage{
@@ -171,8 +264,12 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				Content: fmt.Sprintf("Error: %v", msg.err),
 			})
 		} else if msg.content != "" {
+			role := "assistant"
+			if msg.isCommand {
+				role = "command"
+			}
 			m.messages = append(m.messages, BorderedMessage{
-				Role:    "assistant",
+				Role:    role,
 				Content: msg.content,
 			})
 		}
@@ -194,6 +291,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m BorderedTUI) View() string {
+	// If we're showing the model selector, display it instead
+	if m.selectingModel && m.modelSelector != nil {
+		return m.modelSelector.View()
+	}
+	
 	// Ensure we have a valid width
 	width := m.width
 	if width == 0 {
@@ -217,10 +319,10 @@ func (m BorderedTUI) View() string {
 		modelStyle.Render(m.model),
 		modelStyle.Render(m.provider))
 	
-	toolCount := 8 // We have 8 tools
+	toolCount := len(registry.List())
 	header2 := fmt.Sprintf("%s | %s",
 		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
-		cmdStyle.Render("Commands: /help, /tools, /clear, /exit"))
+		cmdStyle.Render("Commands: /help, /tools, /model, /clear, /exit"))
 	
 	b.WriteString(header1 + "\n")
 	b.WriteString(header2 + "\n\n")
@@ -238,6 +340,10 @@ func (m BorderedTUI) View() string {
 		case "assistant":
 			// Render with emoji prefix and wrapped text
 			content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
+			b.WriteString(content + "\n")
+		case "command":
+			// Command output - no prefix, just the content
+			content := messageStyle.Render(msg.Content)
 			b.WriteString(content + "\n")
 		case "error":
 			// Render with emoji prefix and wrapped text
@@ -298,6 +404,7 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
 		help := `Commands:
   /help  - Show this help
   /tools - List available tools
+  /model - Change model interactively
   /clear - Clear chat history
   /exit  - Exit application
 
@@ -305,28 +412,49 @@ Keyboard shortcuts:
   Ctrl+C - Quit
   Ctrl+L - Clear chat
   Enter  - Send message`
-		return borderedResponseMsg{content: help}
+		return borderedResponseMsg{content: help, isCommand: true}
 	case "/tools":
-		tools := `Available tools:
-  🧮 calculate       - Evaluate mathematical expressions
-  📁 directory_list  - List directory contents
-  📝 file_edit       - Edit files by replacing strings
-  📄 file_read       - Read file contents
-  💾 file_write      - Write content to files
-  🔍 google_search   - Search Google
-  🖥️  shell          - Execute shell commands
-  📚 wikipedia       - Search Wikipedia`
-		return borderedResponseMsg{content: tools}
+		var toolsBuilder strings.Builder
+		toolsBuilder.WriteString("Available tools:\n")
+		
+		// Get all tools from registry
+		toolNames := registry.List()
+		for _, name := range toolNames {
+			tool, err := registry.Get(name)
+			if err != nil {
+				continue
+			}
+			// Format: tool_name - description
+			toolsBuilder.WriteString(fmt.Sprintf("  %-15s - %s\n", name, tool.Description()))
+		}
+		
+		return borderedResponseMsg{content: strings.TrimRight(toolsBuilder.String(), "\n"), isCommand: true}
+	case "/model":
+		// Check if providers are available
+		if m.providers == nil || len(m.providers) == 0 {
+			return borderedResponseMsg{content: "Model selection not available (no providers configured)", isCommand: true}
+		}
+		
+		// Return a special message that will trigger model selection
+		return borderedResponseMsg{content: "", isModelSelect: true}
 	default:
-		return borderedResponseMsg{content: fmt.Sprintf("Unknown command: %s", cmd)}
+		return borderedResponseMsg{content: fmt.Sprintf("Unknown command: %s", cmd), isCommand: true}
 	}
 }
 
 type borderedResponseMsg struct {
-	content string
-	err     error
-	isQuit  bool
-	isClear bool
+	content       string
+	err           error
+	isQuit        bool
+	isClear       bool
+	isCommand     bool // Flag to indicate this is a command response
+	isModelSelect bool // Flag to trigger model selection
+}
+
+// modelSelectedMsg is sent when a model is selected
+type modelSelectedMsg struct {
+	provider string
+	model    string
 }
 
 // adjustTextareaHeight dynamically adjusts the textarea height based on content

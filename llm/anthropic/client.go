@@ -306,32 +306,59 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 
 // ListModels returns available Anthropic models
 func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
-	// Anthropic doesn't have a models endpoint, so return hardcoded list
-	models := []llm.Model{
-		{
-			ID:      "claude-3-opus-20240229",
-			Object:  "model",
-			Created: 1709251200,
-			OwnedBy: "anthropic",
-		},
-		{
-			ID:      "claude-3-sonnet-20240229",
-			Object:  "model",
-			Created: 1709251200,
-			OwnedBy: "anthropic",
-		},
-		{
-			ID:      "claude-3-haiku-20240307",
-			Object:  "model",
-			Created: 1709856000,
-			OwnedBy: "anthropic",
-		},
-		{
-			ID:      "claude-2.1",
-			Object:  "model",
-			Created: 1700697600,
-			OwnedBy: "anthropic",
-		},
+	// Create request for models endpoint
+	req, err := http.NewRequestWithContext(ctx, "GET", c.options.BaseURL+"/models", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create request: %w", err)
+	}
+
+	// Set headers
+	c.setHeaders(req)
+
+	// Execute request
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// Check response status
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Anthropic API error: status %d, body: %s", resp.StatusCode, string(body))
+	}
+
+	// Parse response
+	var response struct {
+		Data []struct {
+			ID          string `json:"id"`
+			Type        string `json:"type"`
+			DisplayName string `json:"display_name"`
+			CreatedAt   string `json:"created_at"`
+		} `json:"data"`
+		HasMore bool   `json:"has_more"`
+		FirstID string `json:"first_id"`
+		LastID  string `json:"last_id"`
+	}
+	
+	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	// Convert to llm.Model format
+	models := make([]llm.Model, 0, len(response.Data))
+	for _, m := range response.Data {
+		model := llm.Model{
+			ID:          m.ID,
+			Object:      "model",
+			OwnedBy:     "anthropic",
+			Description: m.DisplayName,
+		}
+		// Parse created_at timestamp if needed
+		if t, err := time.Parse(time.RFC3339, m.CreatedAt); err == nil {
+			model.Created = t.Unix()
+		}
+		models = append(models, model)
 	}
 
 	return models, nil

@@ -13,6 +13,7 @@ import (
 	"github.com/spf13/viper"
 	
 	"github.com/nachoal/simple-agent-go/agent"
+	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
@@ -104,20 +105,57 @@ func main() {
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
-	// Get provider and model
-	if provider == "" {
-		provider = getEnvOrDefault("DEFAULT_PROVIDER", "openai")
-	}
-	if model == "" {
-		model = getEnvOrDefault("DEFAULT_MODEL", getDefaultModel(provider))
+	// Create config manager
+	configManager, err := config.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to create config manager: %w", err)
 	}
 	
-	// Create LLM client
+	// Get provider and model from config or flags
+	if provider == "" {
+		provider = getEnvOrDefault("DEFAULT_PROVIDER", configManager.GetDefaultProvider())
+	}
+	if model == "" {
+		model = configManager.GetDefaultModel()
+		if model == "" {
+			model = getEnvOrDefault("DEFAULT_MODEL", getDefaultModel(provider))
+		}
+	}
+	
+	// Create initial LLM client
 	llmClient, err := createLLMClient(provider, model)
 	if err != nil {
 		return fmt.Errorf("failed to create LLM client: %w", err)
 	}
 	defer llmClient.Close()
+	
+	// Create all provider clients for model selection
+	providers := make(map[string]llm.Client)
+	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
+	
+	// Debug: count successful providers
+	successCount := 0
+	
+	for _, name := range providerNames {
+		// Skip if it's the same as our current client
+		if name == strings.ToLower(provider) {
+			providers[name] = llmClient
+			successCount++
+			continue
+		}
+		
+		// Try to create client, skip if API key is missing
+		client, err := createLLMClient(name, getDefaultModel(name))
+		if err == nil {
+			providers[name] = client
+			successCount++
+		}
+	}
+	
+	// If verbose, show how many providers were loaded
+	if verbose {
+		fmt.Printf("Loaded %d/%d providers for model selection\n", successCount, len(providerNames))
+	}
 	
 	// Create agent
 	agentInstance := agent.New(llmClient,
@@ -134,9 +172,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Resuming session: %s\n", resume)
 	}
 	
-	// Create and run TUI (bordered version, no alt screen)
+	// Create and run TUI (bordered version with providers)
 	p := tea.NewProgram(
-		tui.NewBorderedTUI(llmClient, agentInstance, provider, model),
+		tui.NewBorderedTUIWithProviders(llmClient, agentInstance, provider, model, providers, configManager),
 	)
 	
 	if _, err := p.Run(); err != nil {

@@ -234,20 +234,6 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Add descriptions for Groq models
-	for i := range response.Data {
-		switch response.Data[i].ID {
-		case "mixtral-8x7b-32768":
-			response.Data[i].Description = "Mixtral 8x7B with 32k context - Fast and capable"
-		case "llama3-70b-8192":
-			response.Data[i].Description = "Llama 3 70B with 8k context"
-		case "llama3-8b-8192":
-			response.Data[i].Description = "Llama 3 8B with 8k context"
-		case "gemma-7b-it":
-			response.Data[i].Description = "Gemma 7B Instruct"
-		}
-	}
-
 	return response.Data, nil
 }
 
