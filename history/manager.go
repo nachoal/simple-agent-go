@@ -140,7 +140,10 @@ func (m *Manager) LoadSession(id string) (*Session, error) {
 
 // GetLastSessionForPath returns the most recent session for a given path
 func (m *Manager) GetLastSessionForPath(path string) (*Session, error) {
+	m.mu.RLock()
 	meta, err := m.loadMeta()
+	m.mu.RUnlock()
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to load meta: %w", err)
 	}
@@ -157,7 +160,10 @@ func (m *Manager) GetLastSessionForPath(path string) (*Session, error) {
 
 // ListSessionsForPath returns all sessions for a given path
 func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
+	m.mu.RLock()
 	meta, err := m.loadMeta()
+	m.mu.RUnlock()
+	
 	if err != nil {
 		return nil, fmt.Errorf("failed to load meta: %w", err)
 	}
@@ -276,6 +282,9 @@ func (m *Manager) saveMeta(meta *MetaIndex) error {
 }
 
 func (m *Manager) updatePathIndex(path, sessionID string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	
 	meta, err := m.loadMeta()
 	if err != nil {
 		return err
