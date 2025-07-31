@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
@@ -34,6 +35,9 @@ type BorderedTUI struct {
 	modelSelector  tea.Model
 	providers      map[string]llm.Client
 	configManager  *config.Manager
+	
+	// Glamour renderer
+	renderer *glamour.TermRenderer
 }
 
 // BorderedMessage represents a chat message
@@ -77,15 +81,22 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	// Set initial width (will be updated by WindowSizeMsg)
 	ta.SetWidth(74) // Default width minus borders/padding
 	
+	// Simple glamour renderer
+	renderer, _ := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(74),
+	)
+	
 	tui := &BorderedTUI{
-		agent:     agentInstance,
-		llmClient: llmClient,
-		provider:  provider,
+		agent:       agentInstance,
+		llmClient:   llmClient,
+		provider:    provider,
 		model:       model,
 		textarea:    ta,
 		messages:    []BorderedMessage{},
 		width:       80, // Default terminal width
 		initialized: false,
+		renderer:    renderer,
 	}
 	
 	return tui
@@ -351,9 +362,22 @@ func (m BorderedTUI) View() string {
 			content := messageStyle.Render(fmt.Sprintf("👤 You: %s", msg.Content))
 			b.WriteString(content + "\n")
 		case "assistant":
-			// Render with emoji prefix and wrapped text
-			content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
-			b.WriteString(content + "\n")
+			// Use glamour if available, otherwise fallback
+			if m.renderer != nil {
+				rendered, err := m.renderer.Render(msg.Content)
+				if err == nil {
+					b.WriteString("🤖 Assistant:\n")
+					b.WriteString(strings.TrimRight(rendered, "\n") + "\n")
+				} else {
+					// Fallback
+					content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
+					b.WriteString(content + "\n")
+				}
+			} else {
+				// No renderer
+				content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
+				b.WriteString(content + "\n")
+			}
 		case "command":
 			// Command output - no prefix, just the content
 			content := messageStyle.Render(msg.Content)
