@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"time"
 
 	"github.com/nachoal/simple-agent-go/history"
 )
@@ -27,41 +26,33 @@ func NewHistoryAgent(agent Agent, historyManager *history.Manager, session *hist
 
 // Query sends a query and saves the conversation to history
 func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, error) {
-	// Add user message to history
+	// Remember the initial message count to rollback on failure
+	initialMessageCount := 0
 	if ha.currentSession != nil {
-		ha.currentSession.Messages = append(ha.currentSession.Messages, history.Message{
-			Role:      "user",
-			Content:   &query,
-			Timestamp: time.Now(),
-		})
+		initialMessageCount = len(ha.currentSession.Messages)
 	}
 	
-	// Execute query
+	// Execute query first
 	response, err := ha.Agent.Query(ctx, query)
 	
-	// Add response to history
-	if ha.currentSession != nil && err == nil {
-		// Convert tool calls
-		var toolCalls []history.ToolCall
-		if len(response.ToolCalls) > 0 {
-			toolCalls = make([]history.ToolCall, 0)
-			// Note: ToolCalls in Response are ToolResult, not the actual calls
-			// We'll store the results as part of the message content
-		}
+	// If successful, update history with the complete conversation
+	if err == nil && ha.currentSession != nil {
+		// Get the complete memory from the agent (includes all tool interactions)
+		agentMemory := ha.Agent.GetMemory()
 		
-		ha.currentSession.Messages = append(ha.currentSession.Messages, history.Message{
-			Role:      "assistant",
-			Content:   &response.Content,
-			ToolCalls: toolCalls,
-			Timestamp: time.Now(),
-		})
+		// Convert and store all new messages since our last save
+		// We need to sync our session with the agent's memory
+		ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
 		
-		// Save session
-		if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
+		// Save session with complete history
+		if saveErr := ha.historyManager.SaveSession(ha.currentSession); saveErr != nil {
 			// Log error but don't fail the query
-			fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
+			fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", saveErr)
 			fmt.Fprintf(os.Stderr, "Your conversation may not be saved. Please check disk space and permissions.\n\n")
 		}
+	} else if err != nil && ha.currentSession != nil {
+		// Query failed - rollback to initial state
+		ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
 	}
 	
 	return response, err
@@ -69,13 +60,10 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 
 // QueryStream sends a query and streams the response while saving to history
 func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan StreamEvent, error) {
-	// Add user message to history
+	// Remember the initial message count to rollback on failure
+	initialMessageCount := 0
 	if ha.currentSession != nil {
-		ha.currentSession.Messages = append(ha.currentSession.Messages, history.Message{
-			Role:      "user",
-			Content:   &query,
-			Timestamp: time.Now(),
-		})
+		initialMessageCount = len(ha.currentSession.Messages)
 	}
 	
 	// Get the stream
@@ -90,28 +78,22 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 	go func() {
 		defer close(intercepted)
 		
-		var fullContent string
-		var toolCalls []history.ToolCall
+		streamSucceeded := false
 		
 		for event := range events {
 			// Forward the event
 			intercepted <- event
 			
-			// Collect content for history
+			// Check for completion or error
 			switch event.Type {
-			case EventTypeMessage:
-				fullContent += event.Content
 			case EventTypeComplete:
-				// Save to history when complete
-				if ha.currentSession != nil && fullContent != "" {
-					ha.currentSession.Messages = append(ha.currentSession.Messages, history.Message{
-						Role:      "assistant",
-						Content:   &fullContent,
-						ToolCalls: toolCalls,
-						Timestamp: time.Now(),
-					})
+				streamSucceeded = true
+				// Get the complete memory from the agent (includes all tool interactions)
+				if ha.currentSession != nil {
+					agentMemory := ha.Agent.GetMemory()
+					ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
 					
-					// Save session
+					// Save session with complete history
 					if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
 						// Send error event through the stream
 						intercepted <- StreamEvent{
@@ -122,7 +104,17 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 						fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
 					}
 				}
+			case EventTypeError:
+				// Stream failed - rollback the session
+				if ha.currentSession != nil && !streamSucceeded {
+					ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+				}
 			}
+		}
+		
+		// If stream ended without completion or error, rollback
+		if !streamSucceeded && ha.currentSession != nil {
+			ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
 		}
 	}()
 	
