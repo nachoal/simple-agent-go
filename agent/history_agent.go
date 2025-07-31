@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"time"
 
 	"github.com/nachoal/simple-agent-go/history"
@@ -57,7 +59,8 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 		// Save session
 		if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
 			// Log error but don't fail the query
-			// TODO: Add proper logging
+			fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
+			fmt.Fprintf(os.Stderr, "Your conversation may not be saved. Please check disk space and permissions.\n\n")
 		}
 	}
 	
@@ -109,7 +112,15 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 					})
 					
 					// Save session
-					ha.historyManager.SaveSession(ha.currentSession)
+					if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
+						// Send error event through the stream
+						intercepted <- StreamEvent{
+							Type:  EventTypeError,
+							Error: fmt.Errorf("failed to save conversation history: %w", err),
+						}
+						// Also log to stderr
+						fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
+					}
 				}
 			}
 		}
