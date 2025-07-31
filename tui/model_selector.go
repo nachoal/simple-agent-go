@@ -47,10 +47,12 @@ func NewModelSelector(providers map[string]llm.Client, onSelect func(provider, m
 		BorderLeftForeground(lipgloss.Color("170"))
 
 	l := list.New([]list.Item{}, delegate, 80, 20) // Default size
-	l.Title = "Select a Model"
+	l.Title = "Select a Model (type to filter)"
 	l.SetShowStatusBar(true)
 	l.SetFilteringEnabled(true)
 	l.SetShowHelp(true)
+	l.FilterInput.Placeholder = "Type to filter models..."
+	l.DisableQuitKeybindings() // We handle quit ourselves
 	l.Styles.Title = lipgloss.NewStyle().
 		Background(lipgloss.Color("62")).
 		Foreground(lipgloss.Color("230")).
@@ -80,8 +82,10 @@ func (m *ModelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
-			return m, tea.Quit
+		case "esc", "ctrl+c":
+			// Don't quit on 'q' as it might be part of search
+			// The parent component will handle the exit
+			return m, nil
 		case "enter":
 			if i, ok := m.list.SelectedItem().(ModelItem); ok {
 				m.selected = i
