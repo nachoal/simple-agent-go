@@ -36,12 +36,17 @@ var (
 	verbose    bool
 	continueConv bool
 	resume     string
+	resumeSet  bool
 	
 	// Root command
 	rootCmd = &cobra.Command{
 		Use:   "simple-agent",
 		Short: "AI agent with tool support",
 		Long:  "Simple Agent Go - A powerful AI agent framework with multiple LLM providers and tool support",
+		PreRun: func(cmd *cobra.Command, args []string) {
+			// Check if resume flag was explicitly set
+			resumeSet = cmd.Flags().Changed("resume")
+		},
 		RunE:  runTUI,
 	}
 	
@@ -78,7 +83,10 @@ func init() {
 	
 	// TUI-specific flags
 	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
-	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session or show picker if empty")
+	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session ID or show picker if no ID provided")
+	
+	// Set NoOptDefVal for resume flag - this value is used when -r is provided without an argument
+	rootCmd.Flags().Lookup("resume").NoOptDefVal = "picker"
 	
 	// Add subcommands
 	rootCmd.AddCommand(queryCmd)
@@ -226,9 +234,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				)
 			}
 		}
-	} else if resume != "" {
-		// Show session picker or load specific session
-		if resume == "list" {
+	} else if resumeSet {
+		// Show session picker if no ID provided, or load specific session
+		if resume == "picker" || resume == "list" || resume == "" {
 			sessions, err := historyMgr.ListSessionsForPath(cwd)
 			if err != nil {
 				return fmt.Errorf("failed to list sessions: %w", err)
@@ -252,22 +260,39 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				}
 				
 				// Check if a session was selected
-				if pickerResult, ok := pickerModel.(*tui.SessionPicker); ok {
-					// Find selected session
-					for _, s := range sessions {
-						if s.ID == pickerResult.SelectedSessionID {
-							session, err = historyMgr.LoadSession(s.ID)
-							if err != nil {
-								return fmt.Errorf("failed to load session: %w", err)
-							}
-							break
+				if verbose {
+					fmt.Printf("Picker model type: %T\n", pickerModel)
+				}
+				if pickerResult, ok := pickerModel.(tui.SessionPicker); ok {
+					if verbose {
+						fmt.Printf("Picker result type assertion successful, SelectedSessionID: '%s'\n", pickerResult.SelectedSessionID)
+					}
+					if pickerResult.SelectedSessionID != "" {
+						// Session was selected
+						if verbose {
+							fmt.Printf("Selected session ID: %s\n", pickerResult.SelectedSessionID)
 						}
+						session, err = historyMgr.LoadSession(pickerResult.SelectedSessionID)
+						if err != nil {
+							return fmt.Errorf("failed to load session: %w", err)
+						}
+						fmt.Printf("Resuming session from %s...\n", session.UpdatedAt.Format("Jan 02 15:04"))
+						if verbose {
+							fmt.Printf("Session has %d messages\n", len(session.Messages))
+						}
+					}
+				} else {
+					if verbose {
+						fmt.Printf("Type assertion failed! Model type is: %T\n", pickerModel)
 					}
 				}
 				
 				if session == nil {
-					// User cancelled or no selection
-					return nil
+					// User cancelled - start new session instead
+					session, err = historyMgr.StartSession(cwd, provider, model)
+					if err != nil {
+						return fmt.Errorf("failed to start session: %w", err)
+					}
 				}
 			}
 		} else {
@@ -279,7 +304,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		}
 		
 		// Update provider/model from session
-		if session != nil && (session.Provider != provider || session.Model != model) {
+		if session != nil {
+			// Always update provider/model from the session
 			provider = session.Provider
 			model = session.Model
 			// Recreate client with session's provider/model
@@ -305,8 +331,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	historyAgent = agent.NewHistoryAgent(agentInstance, historyMgr, session)
 	
 	// Restore memory if continuing/resuming
-	if continueConv || resume != "" {
+	if continueConv || resumeSet {
 		historyAgent.RestoreMemoryFromSession(session)
+		if verbose && session != nil {
+			fmt.Printf("Restored %d messages from session %s\n", len(session.Messages), session.ID)
+		}
 	}
 	
 	// If verbose, show the enhanced system prompt (including tools)
@@ -329,8 +358,6 @@ func runTUI(cmd *cobra.Command, args []string) error {
 			}
 		}
 		fmt.Println("===================\n")
-		fmt.Println("Press Enter to continue...")
-		fmt.Scanln()
 	}
 	
 	// Create and run TUI (bordered version with providers and history)
