@@ -263,7 +263,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				if verbose {
 					fmt.Printf("Picker model type: %T\n", pickerModel)
 				}
-				if pickerResult, ok := pickerModel.(tui.SessionPicker); ok {
+				if pickerResult, ok := pickerModel.(*tui.SessionPicker); ok {
 					if verbose {
 						fmt.Printf("Picker result type assertion successful, SelectedSessionID: '%s'\n", pickerResult.SelectedSessionID)
 					}

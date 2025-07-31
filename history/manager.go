@@ -314,7 +314,11 @@ func (m *Manager) generateTitle(session *Session) string {
 func generateRandomID(length int) string {
 	const charset = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, length)
-	rand.Read(b)
+	if _, err := rand.Read(b); err != nil {
+		// Fall back to time-based seed if crypto/rand fails
+		// This should be extremely rare
+		panic(fmt.Sprintf("crypto/rand failed: %v", err))
+	}
 	for i := range b {
 		b[i] = charset[b[i]%byte(len(charset))]
 	}

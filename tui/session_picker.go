@@ -38,7 +38,7 @@ func (p SessionPicker) Init() tea.Cmd {
 	return nil
 }
 
-func (p SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		p.width = msg.Width
