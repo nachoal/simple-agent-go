@@ -120,6 +120,48 @@ func NewBorderedTUIWithProviders(llmClient llm.Client, agentInstance agent.Agent
 	return tui
 }
 
+// NewBorderedTUIWithHistory creates a new bordered TUI with history support
+func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.HistoryAgent, provider, model string, providers map[string]llm.Client, configManager *config.Manager) *BorderedTUI {
+	tui := NewBorderedTUI(llmClient, historyAgent, provider, model)
+	tui.providers = providers
+	tui.configManager = configManager
+	
+	// Load messages from history if available
+	if historyAgent != nil {
+		session := historyAgent.GetSession()
+		if session != nil && len(session.Messages) > 0 {
+			// Debug output
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[TUI] Loading %d messages from session %s\n", len(session.Messages), session.ID)
+			}
+			
+			// Convert history messages to TUI messages
+			for _, msg := range session.Messages {
+				// Skip system messages in the display
+				if msg.Role == "system" {
+					continue
+				}
+				
+				content := ""
+				if msg.Content != nil {
+					content = *msg.Content
+				}
+				
+				tui.messages = append(tui.messages, BorderedMessage{
+					Role:    msg.Role,
+					Content: content,
+				})
+			}
+			
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[TUI] Loaded %d messages into TUI display\n", len(tui.messages))
+			}
+		}
+	}
+	
+	return tui
+}
+
 func (m BorderedTUI) Init() tea.Cmd {
 	// Initialize with a default width if not set
 	if m.width == 0 {

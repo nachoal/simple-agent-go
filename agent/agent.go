@@ -643,6 +643,19 @@ func (a *agent) getToolListForPrompt() string {
 	return toolInfo.String()
 }
 
+// SetMemory sets the conversation memory
+func (a *agent) SetMemory(messages []llm.Message) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	
+	a.memory.Messages = make([]llm.Message, len(messages))
+	copy(a.memory.Messages, messages)
+	
+	// Update token count if needed
+	// TODO: Implement token counting
+	a.memory.TokenCount = 0
+}
+
 // parseToolCallsFromContent attempts to parse tool calls from content
 // This is for compatibility with providers that return tool calls in content
 func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
