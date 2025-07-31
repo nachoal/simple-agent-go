@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"sync"
 
 	"github.com/nachoal/simple-agent-go/internal/schema"
@@ -106,11 +107,34 @@ func (r *Registry) Execute(ctx context.Context, name string, params json.RawMess
 		return "", err
 	}
 
+	// Debug logging
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "[Registry] Tool %s - Raw params: %s (type: %T)\n", name, string(params), params)
+	}
+
+	// Check if params is double-encoded (a JSON string containing JSON)
+	var decodedParams json.RawMessage
+	if len(params) > 0 && params[0] == '"' {
+		// This looks like a JSON string, try to decode it
+		var paramStr string
+		if err := json.Unmarshal(params, &paramStr); err == nil {
+			decodedParams = json.RawMessage(paramStr)
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[Registry] Detected double-encoded params, decoded to: %s\n", string(decodedParams))
+			}
+		} else {
+			decodedParams = params
+		}
+	} else {
+		decodedParams = params
+	}
+
 	// Unmarshal parameters into the tool's parameter struct
 	paramStruct := tool.Parameters()
-	if err := json.Unmarshal(params, paramStruct); err != nil {
+	if err := json.Unmarshal(decodedParams, paramStruct); err != nil {
 		return "", tools.NewToolError("INVALID_PARAMS", "Failed to parse parameters").
-			WithDetail("error", err.Error())
+			WithDetail("error", err.Error()).
+			WithDetail("raw_params", string(params))
 	}
 
 	// Validate parameters
@@ -119,8 +143,8 @@ func (r *Registry) Execute(ctx context.Context, name string, params json.RawMess
 			WithDetail("error", err.Error())
 	}
 
-	// Execute the tool
-	return tool.Execute(ctx, params)
+	// Execute the tool (use decoded params)
+	return tool.Execute(ctx, decodedParams)
 }
 
 // ExecuteToolCall executes a tool call

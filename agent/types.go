@@ -19,6 +19,7 @@ type Config struct {
 	Timeout         time.Duration
 	MemorySize      int
 	StreamResponses bool
+	progressHandler func(ProgressEvent) // temporary storage for handler
 }
 
 // DefaultConfig returns a default agent configuration
@@ -81,6 +82,26 @@ type ToolEvent struct {
 	Error  error
 }
 
+// ProgressEvent represents agent progress events
+type ProgressEvent struct {
+	Type      ProgressEventType
+	Iteration int
+	Max       int
+	ToolCount int
+	ToolName  string
+	Message   string
+}
+
+// ProgressEventType represents types of progress events
+type ProgressEventType string
+
+const (
+	ProgressEventIteration      ProgressEventType = "iteration"
+	ProgressEventToolCallsStart ProgressEventType = "tool_calls_start"
+	ProgressEventToolCall       ProgressEventType = "tool_call"
+	ProgressEventNoTools        ProgressEventType = "no_tools"
+)
+
 // Agent interface defines the agent contract
 type Agent interface {
 	// Query sends a query and returns the response
@@ -99,15 +120,18 @@ type Agent interface {
 	SetSystemPrompt(prompt string)
 }
 
-const defaultSystemPrompt = `You are a helpful AI assistant with access to various tools to help answer questions and perform tasks.
-
-When you need to use a tool, you will be provided with function signatures. Use them to gather information or perform actions as needed.
+const defaultSystemPrompt = `You are an AI assistant that can leverage external tools to answer the user.
+You have access to a set of tools defined separately in the request. When useful, call them.
+When you don't call a tool use markdown to format your response.
 
 Guidelines:
-1. Be helpful, accurate, and concise in your responses
-2. Use tools when they would provide more accurate or up-to-date information
-3. Explain your reasoning when appropriate
-4. If you're unsure about something, say so
-5. Always strive to provide the most helpful response possible
+1. If the answer can be given directly, do so.
+2. If you need to look up information, call the relevant tool. Do NOT fabricate tool calls.
+3. A tool call response will be provided with role "tool". You can combine multiple tool calls if helpful.
+4. After you have enough information, respond to the user with a clear final answer.
 
-Available tools will be provided based on the context.`
+When calling a tool, you have two options:
+1. Use the native function calling format if your model supports it (preferred)
+2. Respond with **ONLY** a JSON payload following this format:
+   {"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}
+   Do **not** add any other text when using JSON format—just output the JSON.`

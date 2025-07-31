@@ -11,10 +11,9 @@ import (
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// CalculateParams defines the parameters for the calculate tool
-type CalculateParams struct {
-	Expression string `json:"expression" schema:"required" description:"Mathematical expression to evaluate"`
-}
+// CalculateParams now uses generic input like Ruby
+// The input string is the expression directly
+type CalculateParams = base.GenericParams
 
 // CalculateTool evaluates mathematical expressions
 type CalculateTool struct {
@@ -24,24 +23,19 @@ type CalculateTool struct {
 
 // Parameters returns the parameters struct
 func (t *CalculateTool) Parameters() interface{} {
-	return &CalculateParams{}
+	return &base.GenericParams{}
 }
 
 // Execute evaluates a mathematical expression
 func (t *CalculateTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args CalculateParams
+	var args base.GenericParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	if err := Validate(&args); err != nil {
-		return "", NewToolError("VALIDATION_FAILED", "Parameter validation failed").
-			WithDetail("error", err.Error())
-	}
-
-	// Clean the expression
-	expr := strings.TrimSpace(args.Expression)
+	// In Ruby style, the input is the expression directly
+	expr := strings.TrimSpace(args.Input)
 	if expr == "" {
 		return "", NewToolError("EMPTY_EXPRESSION", "Expression cannot be empty")
 	}

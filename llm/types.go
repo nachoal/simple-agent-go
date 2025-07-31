@@ -18,8 +18,8 @@ const (
 // Message represents a chat message
 type Message struct {
 	Role       Role            `json:"role"`
-	Content    string          `json:"content"`
-	Name       string          `json:"name,omitempty"`       // For tool messages
+	Content    *string         `json:"content,omitempty"`      // Pointer to allow nil/omission
+	Name       string          `json:"name,omitempty"`         // For tool messages
 	ToolCallID string          `json:"tool_call_id,omitempty"` // For tool responses
 	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`   // For assistant messages
 }
@@ -35,6 +35,18 @@ type ToolCall struct {
 type FunctionCall struct {
 	Name      string          `json:"name"`
 	Arguments json.RawMessage `json:"arguments"`
+}
+
+// MarshalJSON customizes JSON serialization for FunctionCall
+func (fc FunctionCall) MarshalJSON() ([]byte, error) {
+	type Alias FunctionCall
+	return json.Marshal(&struct {
+		Arguments string `json:"arguments"`
+		*Alias
+	}{
+		Arguments: string(fc.Arguments),
+		Alias:     (*Alias)(&fc),
+	})
 }
 
 // ChatRequest represents a chat completion request
@@ -168,4 +180,17 @@ func WithHeaders(headers map[string]string) ClientOption {
 			o.Headers[k] = v
 		}
 	}
+}
+
+// StringPtr is a helper function to get a pointer to a string
+func StringPtr(s string) *string {
+	return &s
+}
+
+// GetStringValue safely gets string value from pointer
+func GetStringValue(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }

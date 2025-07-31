@@ -12,11 +12,9 @@ import (
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// GoogleSearchParams defines the parameters for the Google Search tool
-type GoogleSearchParams struct {
-	Query string `json:"query" schema:"required" description:"Search query for Google"`
-	Num   int    `json:"num,omitempty" schema:"min:1,max:10" description:"Number of results to return (default: 10)"`
-}
+// GoogleSearchParams now uses generic input like Ruby
+// The input string is the search query directly
+type GoogleSearchParams = base.GenericParams
 
 // GoogleSearchTool performs Google searches using the Custom Search API
 type GoogleSearchTool struct {
@@ -28,20 +26,21 @@ type GoogleSearchTool struct {
 
 // Parameters returns the parameters struct
 func (t *GoogleSearchTool) Parameters() interface{} {
-	return &GoogleSearchParams{}
+	return &base.GenericParams{}
 }
 
 // Execute performs a Google search and returns formatted results
 func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args GoogleSearchParams
+	var args base.GenericParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	if err := Validate(&args); err != nil {
-		return "", NewToolError("VALIDATION_FAILED", "Parameter validation failed").
-			WithDetail("error", err.Error())
+	// In Ruby style, the input is the query directly
+	query := strings.TrimSpace(args.Input)
+	if query == "" {
+		return "", NewToolError("VALIDATION_FAILED", "Query cannot be empty")
 	}
 
 	// Check if API credentials are configured
@@ -50,18 +49,16 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 			WithDetail("help", "Set GOOGLE_API_KEY and GOOGLE_CX environment variables")
 	}
 
-	// Set default number of results
-	if args.Num == 0 {
-		args.Num = 10
-	}
+	// Default to 10 results (Ruby behavior)
+	num := 10
 
 	// Prepare the request
 	baseURL := "https://www.googleapis.com/customsearch/v1"
 	queryParams := url.Values{}
 	queryParams.Add("key", t.apiKey)
 	queryParams.Add("cx", t.searchEngineID)
-	queryParams.Add("q", args.Query)
-	queryParams.Add("num", fmt.Sprintf("%d", args.Num))
+	queryParams.Add("q", query)
+	queryParams.Add("num", fmt.Sprintf("%d", num))
 
 	requestURL := fmt.Sprintf("%s?%s", baseURL, queryParams.Encode())
 
@@ -128,7 +125,7 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 
 	// Check if we have results
 	if len(result.Items) == 0 {
-		return fmt.Sprintf("No results found for query: %s", args.Query), nil
+		return fmt.Sprintf("No results found for query: %s", query), nil
 	}
 
 	// Format results

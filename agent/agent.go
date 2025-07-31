@@ -2,9 +2,15 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"math/rand"
+	"os"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools"
@@ -13,11 +19,12 @@ import (
 
 // agent is the main agent implementation
 type agent struct {
-	client       llm.Client
-	config       Config
-	memory       *Memory
-	toolRegistry *registry.Registry
-	mu           sync.RWMutex
+	client          llm.Client
+	config          Config
+	memory          *Memory
+	toolRegistry    *registry.Registry
+	mu              sync.RWMutex
+	progressHandler func(ProgressEvent)
 }
 
 // New creates a new agent
@@ -36,14 +43,22 @@ func New(client llm.Client, opts ...Option) Agent {
 			Messages: make([]llm.Message, 0),
 			MaxSize:  config.MemorySize,
 		},
-		toolRegistry: registry.Default(),
+		toolRegistry:    registry.Default(),
+		progressHandler: config.progressHandler,
 	}
 
 	// Initialize with system prompt
 	if config.SystemPrompt != "" {
+		// Get tool information to enhance the system prompt
+		toolInfo := a.getToolListForPrompt()
+		enhancedPrompt := config.SystemPrompt
+		if toolInfo != "" {
+			enhancedPrompt = config.SystemPrompt + "\n\n" + toolInfo
+		}
+		
 		a.memory.Messages = append(a.memory.Messages, llm.Message{
 			Role:    llm.RoleSystem,
-			Content: config.SystemPrompt,
+			Content: llm.StringPtr(enhancedPrompt),
 		})
 	}
 
@@ -55,7 +70,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	// Add user message to memory
 	a.addMessage(llm.Message{
 		Role:    llm.RoleUser,
-		Content: query,
+		Content: llm.StringPtr(query),
 	})
 
 	// Get available tools if configured
@@ -74,15 +89,38 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	// Main agent loop
 	var totalUsage llm.Usage
 	var allToolResults []tools.ToolResult
+	toolChoice := "auto"
 	
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
+		// Emit progress event for iteration
+		a.emitProgress(ProgressEvent{
+			Type:      ProgressEventIteration,
+			Iteration: iteration + 1,
+			Max:       a.config.MaxIterations,
+		})
+		
+		// After tools have been executed, encourage final answer
+		if iteration > 0 && len(allToolResults) > 0 {
+			toolChoice = "none"
+		}
+		
 		// Create chat request
 		request := &llm.ChatRequest{
 			Messages:    a.getMessages(),
 			Temperature: a.config.Temperature,
 			MaxTokens:   a.config.MaxTokens,
 			Tools:       availableTools,
-			ToolChoice:  "auto",
+			ToolChoice:  toolChoice,
+		}
+
+		// Debug log available tools
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && len(availableTools) > 0 {
+			fmt.Fprintf(os.Stderr, "\n[Agent] Sending %d tools to LLM:\n", len(availableTools))
+			for _, tool := range availableTools {
+				if fn, ok := tool["function"].(map[string]interface{}); ok {
+					fmt.Fprintf(os.Stderr, "[Agent] - %s: %s\n", fn["name"], fn["description"])
+				}
+			}
 		}
 
 		// Send request to LLM
@@ -106,11 +144,45 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 		choice := response.Choices[0]
 		message := choice.Message
 
+		// Check if we need to parse tool calls from content (for LMStudio/Moonshot)
+		if len(message.ToolCalls) == 0 && message.Content != nil && *message.Content != "" {
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "\n[Agent] No native tool calls found, attempting to parse from content:\n%s\n", *message.Content)
+			}
+			
+			// Try to parse tool calls from content
+			toolCalls := a.parseToolCallsFromContent(*message.Content)
+			if len(toolCalls) > 0 {
+				if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+					fmt.Fprintf(os.Stderr, "[Agent] Parsed %d tool calls from content\n", len(toolCalls))
+					for i, tc := range toolCalls {
+						fmt.Fprintf(os.Stderr, "[Agent] Tool Call %d: %s with args: %s\n", i, tc.Function.Name, string(tc.Function.Arguments))
+					}
+				}
+				message.ToolCalls = toolCalls
+				message.Content = nil // Clear content if we found tool calls
+			} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[Agent] No tool calls could be parsed from content\n")
+			}
+		}
+
+		// If the message has tool calls, ensure content is not nil.
+		// Some models require `content` to be an empty string if `tool_calls` are present.
+		if len(message.ToolCalls) > 0 && message.Content == nil {
+			message.Content = llm.StringPtr("")
+		}
+
 		// Add assistant message to memory
 		a.addMessage(message)
 
 		// Check if we need to execute tools
 		if len(message.ToolCalls) > 0 {
+			// Emit progress event for tool calls
+			a.emitProgress(ProgressEvent{
+				Type:      ProgressEventToolCallsStart,
+				ToolCount: len(message.ToolCalls),
+			})
+			
 			// Execute tools
 			toolCalls := make([]tools.ToolCall, len(message.ToolCalls))
 			for i, tc := range message.ToolCalls {
@@ -119,6 +191,12 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				}
+				
+				// Emit progress event for individual tool call
+				a.emitProgress(ProgressEvent{
+					Type:     ProgressEventToolCall,
+					ToolName: tc.Function.Name,
+				})
 			}
 
 			// Execute tool calls concurrently
@@ -134,19 +212,40 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 
 				a.addMessage(llm.Message{
 					Role:       llm.RoleTool,
-					Content:    content,
+					Content:    llm.StringPtr(content),
 					ToolCallID: result.ID,
-					Name:       result.Name,
 				})
 			}
 
 			// Continue to next iteration for LLM to process tool results
+			// Reset tool choice for next iteration
+			toolChoice = "auto"
+			continue
+		}
+
+		// Check if we have empty content
+		if message.Content == nil || (message.Content != nil && strings.TrimSpace(*message.Content) == "") {
+			// Emit no tools event
+			a.emitProgress(ProgressEvent{
+				Type: ProgressEventNoTools,
+			})
+			
+			// Model returned empty content, prompt for response
+			a.addMessage(llm.Message{
+				Role:    llm.RoleUser,
+				Content: llm.StringPtr("Please provide your response based on the information gathered."),
+			})
+			toolChoice = "none"
 			continue
 		}
 
 		// We have a final response
+		content := ""
+		if message.Content != nil {
+			content = *message.Content
+		}
 		return &Response{
-			Content:      message.Content,
+			Content:      content,
 			ToolCalls:    allToolResults,
 			Usage:        &totalUsage,
 			FinishReason: choice.FinishReason,
@@ -161,7 +260,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 	// Add user message to memory
 	a.addMessage(llm.Message{
 		Role:    llm.RoleUser,
-		Content: query,
+		Content: llm.StringPtr(query),
 	})
 
 	// Create event channel
@@ -214,11 +313,11 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 					choice := event.Choices[0]
 					
 					// Handle content delta
-					if choice.Delta != nil && choice.Delta.Content != "" {
-						fullContent.WriteString(choice.Delta.Content)
+					if choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content != "" {
+						fullContent.WriteString(*choice.Delta.Content)
 						events <- StreamEvent{
 							Type:    EventTypeMessage,
-							Content: choice.Delta.Content,
+							Content: *choice.Delta.Content,
 						}
 					}
 
@@ -233,9 +332,14 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			}
 
 			// Create assistant message from collected content
+			contentStr := fullContent.String()
+			var contentPtr *string
+			if contentStr != "" || len(toolCalls) == 0 {
+				contentPtr = &contentStr
+			}
 			assistantMsg := llm.Message{
 				Role:      llm.RoleAssistant,
-				Content:   fullContent.String(),
+				Content:   contentPtr,
 				ToolCalls: toolCalls,
 			}
 			a.addMessage(assistantMsg)
@@ -284,9 +388,8 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 					// Add to memory
 					a.addMessage(llm.Message{
 						Role:       llm.RoleTool,
-						Content:    content,
+						Content:    llm.StringPtr(content),
 						ToolCallID: result.ID,
-						Name:       result.Name,
 					})
 				}
 
@@ -319,11 +422,18 @@ func (a *agent) Clear() {
 	a.memory.Messages = make([]llm.Message, 0)
 	a.memory.TokenCount = 0
 
-	// Re-add system prompt
+	// Re-add system prompt with tool list
 	if a.config.SystemPrompt != "" {
+		// Get tool information to enhance the system prompt
+		toolInfo := a.getToolListForPrompt()
+		enhancedPrompt := a.config.SystemPrompt
+		if toolInfo != "" {
+			enhancedPrompt = a.config.SystemPrompt + "\n\n" + toolInfo
+		}
+		
 		a.memory.Messages = append(a.memory.Messages, llm.Message{
 			Role:    llm.RoleSystem,
-			Content: a.config.SystemPrompt,
+			Content: llm.StringPtr(enhancedPrompt),
 		})
 	}
 }
@@ -345,14 +455,21 @@ func (a *agent) SetSystemPrompt(prompt string) {
 
 	a.config.SystemPrompt = prompt
 
+	// Get tool information to enhance the system prompt
+	toolInfo := a.getToolListForPrompt()
+	enhancedPrompt := prompt
+	if toolInfo != "" {
+		enhancedPrompt = prompt + "\n\n" + toolInfo
+	}
+
 	// Update the first message if it's a system message
 	if len(a.memory.Messages) > 0 && a.memory.Messages[0].Role == llm.RoleSystem {
-		a.memory.Messages[0].Content = prompt
+		a.memory.Messages[0].Content = llm.StringPtr(enhancedPrompt)
 	} else {
 		// Insert system message at the beginning
 		a.memory.Messages = append([]llm.Message{{
 			Role:    llm.RoleSystem,
-			Content: prompt,
+			Content: llm.StringPtr(enhancedPrompt),
 		}}, a.memory.Messages...)
 	}
 }
@@ -379,13 +496,21 @@ func (a *agent) addMessage(msg llm.Message) {
 	}
 }
 
-// getMessages returns a copy of messages for API calls
+// getMessages returns a copy of messages for API calls, ensuring compatibility.
 func (a *agent) getMessages() []llm.Message {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 
 	messages := make([]llm.Message, len(a.memory.Messages))
 	copy(messages, a.memory.Messages)
+
+	// Compatibility fix for models that require a non-nil content field for tool calls.
+	for i := range messages {
+		if messages[i].Role == llm.RoleAssistant && len(messages[i].ToolCalls) > 0 && messages[i].Content == nil {
+			messages[i].Content = llm.StringPtr("")
+		}
+	}
+
 	return messages
 }
 
@@ -439,4 +564,153 @@ func WithMemorySize(size int) Option {
 	return func(c *Config) {
 		c.MemorySize = size
 	}
+}
+
+// WithProgressHandler sets a progress handler function
+func WithProgressHandler(handler func(ProgressEvent)) Option {
+	return func(c *Config) {
+		// Store in a temporary field that we'll extract
+		c.progressHandler = handler
+	}
+}
+
+// emitProgress emits a progress event if a handler is set
+func (a *agent) emitProgress(event ProgressEvent) {
+	if a.progressHandler != nil {
+		a.progressHandler(event)
+	}
+}
+
+// getToolListForPrompt generates a formatted list of available tools for the system prompt
+func (a *agent) getToolListForPrompt() string {
+	if a.toolRegistry == nil {
+		return ""
+	}
+	
+	var toolInfo strings.Builder
+	toolInfo.WriteString("Available tools:\n\n")
+	
+	// Get all tool names
+	toolNames := a.toolRegistry.List()
+	
+	// Sort for consistent ordering
+	sort.Strings(toolNames)
+	
+	for _, name := range toolNames {
+		tool, err := a.toolRegistry.Get(name)
+		if err != nil {
+			continue
+		}
+		
+		// Get tool schema to extract parameter information
+		schema, err := a.toolRegistry.GetSchema(name)
+		if err != nil {
+			continue
+		}
+		
+		toolInfo.WriteString(fmt.Sprintf("%s:\n", name))
+		toolInfo.WriteString(fmt.Sprintf("Description: %s\n", tool.Description()))
+		
+		// Extract parameter information from schema
+		if fn, ok := schema["function"].(map[string]interface{}); ok {
+			if params, ok := fn["parameters"].(map[string]interface{}); ok {
+				if props, ok := params["properties"].(map[string]interface{}); ok {
+					toolInfo.WriteString("Parameters:\n")
+					for paramName, paramDef := range props {
+						if paramMap, ok := paramDef.(map[string]interface{}); ok {
+							paramType := "string"
+							if t, ok := paramMap["type"].(string); ok {
+								paramType = t
+							}
+							desc := ""
+							if d, ok := paramMap["description"].(string); ok {
+								desc = d
+							}
+							toolInfo.WriteString(fmt.Sprintf("  - %s (%s): %s\n", paramName, paramType, desc))
+						}
+					}
+				}
+			}
+		}
+		
+		toolInfo.WriteString("\n")
+	}
+	
+	toolInfo.WriteString("When you need to use a tool, respond with a JSON object in this format:\n")
+	toolInfo.WriteString(`{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}`)
+	toolInfo.WriteString("\n\nDo not include any other text when calling a tool, just the JSON object.")
+	
+	return toolInfo.String()
+}
+
+// parseToolCallsFromContent attempts to parse tool calls from content
+// This is for compatibility with providers that return tool calls in content
+func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
+	var toolCalls []llm.ToolCall
+	
+	// Try to parse as single JSON object
+	var singleCall struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		ID        string          `json:"id,omitempty"`
+	}
+	
+	content = strings.TrimSpace(content)
+	if err := json.Unmarshal([]byte(content), &singleCall); err == nil && singleCall.Name != "" {
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[Agent] Successfully parsed single JSON tool call\n")
+		}
+		
+		id := singleCall.ID
+		if id == "" {
+			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+		}
+		
+		toolCalls = append(toolCalls, llm.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: llm.FunctionCall{
+				Name:      singleCall.Name,
+				Arguments: singleCall.Arguments,
+			},
+		})
+		return toolCalls
+	} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && err != nil {
+		fmt.Fprintf(os.Stderr, "[Agent] Failed to parse as single JSON: %v\n", err)
+	}
+	
+	// Try multiple JSON objects with regex
+	jsonPattern := regexp.MustCompile(`\{"name":\s*"([^"]+)",\s*"arguments":\s*(\{[^}]*\})(?:,\s*"id":\s*"([^"]+)")?\}`)
+	matches := jsonPattern.FindAllStringSubmatch(content, -1)
+	
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "[Agent] Regex pattern found %d matches\n", len(matches))
+	}
+	
+	for _, match := range matches {
+		name := match[1]
+		args := json.RawMessage(match[2])
+		id := ""
+		if len(match) > 3 {
+			id = match[3]
+		}
+		if id == "" {
+			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+		}
+		
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[Agent] Regex match found tool: %s with args: %s\n", name, string(args))
+		}
+		
+		toolCalls = append(toolCalls, llm.ToolCall{
+			ID:   id,
+			Type: "function",
+			Function: llm.FunctionCall{
+				Name:      name,
+				Arguments: args,
+			},
+		})
+	}
+	
+	return toolCalls
 }

@@ -13,13 +13,11 @@ import (
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// ShellParams defines the parameters for the shell tool
-type ShellParams struct {
-	Command    string   `json:"command" schema:"required" description:"Shell command to execute"`
-	WorkingDir string   `json:"working_dir,omitempty" description:"Working directory for the command"`
-	Timeout    int      `json:"timeout,omitempty" schema:"min:1,max:300" description:"Timeout in seconds (default: 30)"`
-	Env        []string `json:"env,omitempty" description:"Additional environment variables (KEY=value format)"`
-}
+// ShellParams now uses generic input like Ruby
+// The input can be either:
+// 1. A simple command string
+// 2. JSON with command and optional working_dir, timeout, env fields
+type ShellParams = base.GenericParams
 
 // ShellTool executes shell commands
 type ShellTool struct {
@@ -30,31 +28,59 @@ type ShellTool struct {
 
 // Parameters returns the parameters struct
 func (t *ShellTool) Parameters() interface{} {
-	return &ShellParams{}
+	return &base.GenericParams{}
 }
 
 // Execute runs a shell command
 func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args ShellParams
+	var args base.GenericParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	if err := Validate(&args); err != nil {
-		return "", NewToolError("VALIDATION_FAILED", "Parameter validation failed").
-			WithDetail("error", err.Error())
+	// Parse input - can be either plain command or JSON with fields
+	var command string
+	var workingDir string
+	var timeout int = 30 // default
+	var env []string
+
+	// Try to parse as JSON first
+	var cmdParams struct {
+		Command    string   `json:"command"`
+		WorkingDir string   `json:"working_dir,omitempty"`
+		Timeout    int      `json:"timeout,omitempty"`
+		Env        []string `json:"env,omitempty"`
+	}
+	
+	if err := json.Unmarshal([]byte(args.Input), &cmdParams); err == nil && cmdParams.Command != "" {
+		// Successfully parsed as JSON
+		command = cmdParams.Command
+		workingDir = cmdParams.WorkingDir
+		if cmdParams.Timeout > 0 {
+			timeout = cmdParams.Timeout
+		}
+		env = cmdParams.Env
+	} else {
+		// Treat as plain command string
+		command = strings.TrimSpace(args.Input)
 	}
 
-	// Set default timeout
-	timeout := args.Timeout
+	if command == "" {
+		return "", NewToolError("VALIDATION_FAILED", "Command cannot be empty")
+	}
+
+	// Validate timeout
+	if timeout < 1 || timeout > 300 {
+		timeout = 30
+	}
 	if timeout == 0 {
 		timeout = 30
 	}
 
 	// Check if command is allowed (basic safety check)
 	// In production, implement more sophisticated sandboxing
-	baseCmd := strings.Fields(args.Command)[0]
+	baseCmd := strings.Fields(command)[0]
 	if !t.isCommandAllowed(baseCmd) {
 		return "", NewToolError("COMMAND_NOT_ALLOWED", "Command is not in the allowed list").
 			WithDetail("command", baseCmd).
@@ -68,19 +94,19 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 	// Determine shell based on OS
 	var cmd *exec.Cmd
 	if runtime.GOOS == "windows" {
-		cmd = exec.CommandContext(cmdCtx, "cmd", "/C", args.Command)
+		cmd = exec.CommandContext(cmdCtx, "cmd", "/C", command)
 	} else {
-		cmd = exec.CommandContext(cmdCtx, "sh", "-c", args.Command)
+		cmd = exec.CommandContext(cmdCtx, "sh", "-c", command)
 	}
 
 	// Set working directory if specified
-	if args.WorkingDir != "" {
-		cmd.Dir = args.WorkingDir
+	if workingDir != "" {
+		cmd.Dir = workingDir
 	}
 
 	// Add environment variables
-	if len(args.Env) > 0 {
-		cmd.Env = append(cmd.Environ(), args.Env...)
+	if len(env) > 0 {
+		cmd.Env = append(cmd.Environ(), env...)
 	}
 
 	// Capture output
@@ -94,11 +120,11 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 	duration := time.Since(startTime)
 
 	// Build result
-	result := fmt.Sprintf("Command: %s\n", args.Command)
+	result := fmt.Sprintf("Command: %s\n", command)
 	result += fmt.Sprintf("Duration: %v\n", duration)
 	
-	if args.WorkingDir != "" {
-		result += fmt.Sprintf("Working Directory: %s\n", args.WorkingDir)
+	if workingDir != "" {
+		result += fmt.Sprintf("Working Directory: %s\n", workingDir)
 	}
 	
 	result += "\n"

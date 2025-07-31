@@ -3,20 +3,15 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// FileReadParams defines the parameters for the file read tool
-type FileReadParams struct {
-	Path     string `json:"path" schema:"required" description:"Path to the file to read"`
-	Encoding string `json:"encoding,omitempty" schema:"enum:utf-8|ascii|binary" description:"File encoding (default: utf-8)"`
-	MaxBytes int    `json:"max_bytes,omitempty" schema:"min:1,max:10485760" description:"Maximum bytes to read (default: 1MB)"`
-}
+// FileReadParams now uses generic input like Ruby
+// The input string should be JSON with 'path' field
+type FileReadParams = base.GenericParams
 
 // FileReadTool reads file contents
 type FileReadTool struct {
@@ -26,24 +21,31 @@ type FileReadTool struct {
 
 // Parameters returns the parameters struct
 func (t *FileReadTool) Parameters() interface{} {
-	return &FileReadParams{}
+	return &base.GenericParams{}
 }
 
 // Execute reads a file and returns its contents
 func (t *FileReadTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args FileReadParams
+	var args base.GenericParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	if err := Validate(&args); err != nil {
-		return "", NewToolError("VALIDATION_FAILED", "Parameter validation failed").
-			WithDetail("error", err.Error())
+	// Parse the input JSON to get the path
+	var inputParams struct {
+		Path string `json:"path"`
+	}
+	if err := json.Unmarshal([]byte(args.Input), &inputParams); err != nil {
+		return "Error parsing input: " + err.Error() + ". Input must be JSON with 'path' field. Example: {\"path\": \"file.txt\"}", nil
+	}
+
+	if inputParams.Path == "" {
+		return "Error: path parameter is required. Input must be JSON like: {\"path\": \"file.txt\"}", nil
 	}
 
 	// Clean and validate the path
-	cleanPath := filepath.Clean(args.Path)
+	cleanPath := filepath.Clean(inputParams.Path)
 	
 	// Check if file exists
 	info, err := os.Stat(cleanPath)
@@ -62,38 +64,13 @@ func (t *FileReadTool) Execute(ctx context.Context, params json.RawMessage) (str
 			WithDetail("path", cleanPath)
 	}
 
-	// Set default max bytes if not specified
-	maxBytes := args.MaxBytes
-	if maxBytes == 0 {
-		maxBytes = 1024 * 1024 // 1MB default
-	}
-
-	// Check file size
-	if info.Size() > int64(maxBytes) {
-		return fmt.Sprintf("File is too large (%d bytes). Only reading first %d bytes.\n", info.Size(), maxBytes), nil
-	}
-
-	// Open the file
-	file, err := os.Open(cleanPath)
+	// Ruby doesn't limit file size, just read the whole file
+	content, err := os.ReadFile(cleanPath)
 	if err != nil {
-		return "", NewToolError("OPEN_ERROR", "Failed to open file").
-			WithDetail("error", err.Error())
-	}
-	defer file.Close()
-
-	// Read the file with size limit
-	reader := io.LimitReader(file, int64(maxBytes))
-	content, err := io.ReadAll(reader)
-	if err != nil {
-		return "", NewToolError("READ_ERROR", "Failed to read file").
-			WithDetail("error", err.Error())
+		return "Error reading file: " + err.Error(), nil
 	}
 
-	// Handle encoding (for now, just return as string)
-	// TODO: Add proper encoding support
-	result := string(content)
-
-	// Add file info to result
-	return fmt.Sprintf("File: %s\nSize: %d bytes\n---\n%s", cleanPath, len(content), result), nil
+	// Return the content directly (Ruby behavior)
+	return string(content), nil
 }
 

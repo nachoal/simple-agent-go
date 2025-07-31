@@ -38,12 +38,18 @@ func (g *Generator) Generate(v interface{}) (map[string]interface{}, error) {
 func (g *Generator) GenerateFunctionSchema(name, description string, params interface{}) map[string]interface{} {
 	schema, _ := g.Generate(params)
 	
+	// Ensure additionalProperties is false (matches Ruby)
+	if schema != nil {
+		schema["additionalProperties"] = false
+	}
+	
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        name,
 			"description": description,
 			"parameters":  schema,
+			"strict":     true, // Match Ruby's strict flag
 		},
 	}
 }

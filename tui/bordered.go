@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -76,7 +77,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	// Set initial width (will be updated by WindowSizeMsg)
 	ta.SetWidth(74) // Default width minus borders/padding
 	
-	return &BorderedTUI{
+	tui := &BorderedTUI{
 		agent:     agentInstance,
 		llmClient: llmClient,
 		provider:  provider,
@@ -86,6 +87,8 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		width:       80, // Default terminal width
 		initialized: false,
 	}
+	
+	return tui
 }
 
 // NewBorderedTUIWithProviders creates a new bordered TUI with provider and config support
@@ -103,6 +106,8 @@ func (m BorderedTUI) Init() tea.Cmd {
 	}
 	return textarea.Blink
 }
+
+
 
 func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
@@ -212,6 +217,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.textarea.SetHeight(1)
 					m.textarea.Blur()
 					
+					
 					// Send to agent
 					m.isThinking = true
 					cmds = append(cmds, m.sendMessage(value))
@@ -314,15 +320,22 @@ func (m BorderedTUI) View() string {
 	var b strings.Builder
 	
 	// Header - matching Python version exactly
-	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s",
+	verboseIndicator := ""
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		verboseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true) // Red
+		verboseIndicator = " | " + verboseStyle.Render("[VERBOSE]")
+	}
+	
+	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s%s",
 		headerStyle.Render("Simple Agent Go"),
 		modelStyle.Render(m.model),
-		modelStyle.Render(m.provider))
+		modelStyle.Render(m.provider),
+		verboseIndicator)
 	
 	toolCount := len(registry.List())
 	header2 := fmt.Sprintf("%s | %s",
 		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
-		cmdStyle.Render("Commands: /help, /tools, /model, /clear, /exit"))
+		cmdStyle.Render("Commands: /help, /tools, /model, /system, /verbose, /clear, /exit"))
 	
 	b.WriteString(header1 + "\n")
 	b.WriteString(header2 + "\n\n")
@@ -402,11 +415,13 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
 		return borderedResponseMsg{content: "", isClear: true}
 	case "/help":
 		help := `Commands:
-  /help  - Show this help
-  /tools - List available tools
-  /model - Change model interactively
-  /clear - Clear chat history
-  /exit  - Exit application
+  /help    - Show this help
+  /tools   - List available tools
+  /model   - Change model interactively
+  /system  - Show system prompt
+  /verbose - Toggle verbose/debug mode
+  /clear   - Clear chat history
+  /exit    - Exit application
 
 Keyboard shortcuts:
   Ctrl+C - Quit
@@ -437,6 +452,31 @@ Keyboard shortcuts:
 		
 		// Return a special message that will trigger model selection
 		return borderedResponseMsg{content: "", isModelSelect: true}
+	case "/system":
+		// Show the current system prompt with tools
+		messages := m.agent.GetMemory()
+		if len(messages) > 0 && messages[0].Role == "system" {
+			return borderedResponseMsg{
+				content: fmt.Sprintf("**Current System Prompt (including tools):**\n\n%s", messages[0].Content),
+				isCommand: true,
+			}
+		}
+		// Fallback to default if no system message found
+		systemPrompt := agent.DefaultConfig().SystemPrompt
+		return borderedResponseMsg{
+			content: fmt.Sprintf("**Default System Prompt:**\n\n%s", systemPrompt),
+			isCommand: true,
+		}
+	case "/verbose":
+		// Toggle verbose mode
+		currentDebug := os.Getenv("SIMPLE_AGENT_DEBUG")
+		if currentDebug == "true" {
+			os.Unsetenv("SIMPLE_AGENT_DEBUG")
+			return borderedResponseMsg{content: "Verbose mode: OFF", isCommand: true}
+		} else {
+			os.Setenv("SIMPLE_AGENT_DEBUG", "true")
+			return borderedResponseMsg{content: "Verbose mode: ON\nDebug output will be shown in the terminal", isCommand: true}
+		}
 	default:
 		return borderedResponseMsg{content: fmt.Sprintf("Unknown command: %s", cmd), isCommand: true}
 	}
@@ -456,6 +496,7 @@ type modelSelectedMsg struct {
 	provider string
 	model    string
 }
+
 
 // adjustTextareaHeight dynamically adjusts the textarea height based on content
 func (m *BorderedTUI) adjustTextareaHeight() {

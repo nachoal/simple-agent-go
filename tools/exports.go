@@ -16,7 +16,7 @@ func NewFileReadTool() Tool {
 	return &FileReadTool{
 		BaseTool: base.BaseTool{
 			ToolName: "file_read",
-			ToolDesc: "Read the contents of a file from the filesystem",
+			ToolDesc: "Read the contents of a file. Input must be JSON with 'path' field. Example: {\"path\": \"file.txt\"}",
 		},
 	}
 }
@@ -26,7 +26,7 @@ func NewFileWriteTool() Tool {
 	return &FileWriteTool{
 		BaseTool: base.BaseTool{
 			ToolName: "file_write",
-			ToolDesc: "Write content to a file, creating it if it doesn't exist",
+			ToolDesc: "Write content to a file, creating it if it doesn't exist. This overwrites the entire file content. Input should be a JSON string with 'path' and 'content' fields.",
 		},
 	}
 }
@@ -36,7 +36,7 @@ func NewFileEditTool() Tool {
 	return &FileEditTool{
 		BaseTool: base.BaseTool{
 			ToolName: "file_edit",
-			ToolDesc: "Edit a file by replacing strings within it",
+			ToolDesc: "Edit a file by replacing old_str with new_str. Input must be JSON with 'path', 'old_str', and 'new_str' fields. Example: {\"path\": \"file.txt\", \"old_str\": \"old\", \"new_str\": \"new\"}",
 		},
 	}
 }
@@ -46,7 +46,7 @@ func NewDirectoryListTool() Tool {
 	return &DirectoryListTool{
 		BaseTool: base.BaseTool{
 			ToolName: "directory_list",
-			ToolDesc: "List the contents of a directory with optional filtering",
+			ToolDesc: "List files and directories. Input must be JSON with optional 'path' field. Example: {\"path\": \"directory\"} or {} for current directory.",
 		},
 	}
 }
@@ -56,7 +56,7 @@ func NewCalculateTool() Tool {
 	return &CalculateTool{
 		BaseTool: base.BaseTool{
 			ToolName: "calculate",
-			ToolDesc: "Evaluate mathematical expressions safely",
+			ToolDesc: "Evaluates mathematical expressions with support for basic operators (+, -, *, /, %, **) and parentheses.",
 		},
 	}
 }
@@ -84,7 +84,7 @@ func NewWikipediaTool() Tool {
 	return &WikipediaTool{
 		BaseTool: base.BaseTool{
 			ToolName: "wikipedia",
-			ToolDesc: "Search Wikipedia for information on any topic",
+			ToolDesc: "Searches Wikipedia for the given query and returns the snippet of the most relevant article match.",
 		},
 		client: &http.Client{
 			Timeout: 10 * time.Second,
@@ -97,7 +97,7 @@ func NewGoogleSearchTool() Tool {
 	return &GoogleSearchTool{
 		BaseTool: base.BaseTool{
 			ToolName: "google_search",
-			ToolDesc: "Search Google and get detailed results with titles, URLs, and descriptions",
+			ToolDesc: "Performs a Google search using Custom Search API and returns detailed results including titles, URLs, descriptions, and metadata for up to 10 results.",
 		},
 		client: &http.Client{
 			Timeout: 10 * time.Second,

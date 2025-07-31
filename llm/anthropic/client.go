@@ -130,6 +130,12 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Debug logging
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "\n[Anthropic] Request URL: %s/messages\n", c.options.BaseURL)
+		fmt.Fprintf(os.Stderr, "[Anthropic] Request Body:\n%s\n", string(body))
+	}
+
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", c.options.BaseURL+"/messages", bytes.NewReader(body))
 	if err != nil {
@@ -153,6 +159,12 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		respBody, err := io.ReadAll(resp.Body)
 		if err != nil {
 			return fmt.Errorf("failed to read response: %w", err)
+		}
+
+		// Debug logging
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[Anthropic] Response Status: %d\n", resp.StatusCode)
+			fmt.Fprintf(os.Stderr, "[Anthropic] Response Body:\n%s\n", string(respBody))
 		}
 
 		// Check for errors
@@ -182,7 +194,21 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 	}
 
 	// Convert to standard format
-	return c.convertResponse(&anthropicResp), nil
+	response := c.convertResponse(&anthropicResp)
+	
+	// Debug log parsed response
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
+			fmt.Fprintf(os.Stderr, "[Anthropic] Parsed %d tool calls\n", len(response.Choices[0].Message.ToolCalls))
+			for i, tc := range response.Choices[0].Message.ToolCalls {
+				fmt.Fprintf(os.Stderr, "[Anthropic] Tool Call %d: %s with args: %s\n", i, tc.Function.Name, string(tc.Function.Arguments))
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[Anthropic] No tool calls in response\n")
+		}
+	}
+	
+	return response, nil
 }
 
 // ChatStream sends a streaming chat request to Anthropic
@@ -264,7 +290,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 								{
 									Index: 0,
 									Delta: &llm.Message{
-										Content: text,
+										Content: llm.StringPtr(text),
 									},
 								},
 							},
@@ -422,11 +448,11 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *AnthropicRequest {
 	for _, msg := range req.Messages {
 		switch msg.Role {
 		case llm.RoleSystem:
-			systemMessage = msg.Content
+			systemMessage = llm.GetStringValue(msg.Content)
 		case llm.RoleUser:
 			messages = append(messages, AnthropicMessage{
 				Role:    "user",
-				Content: msg.Content,
+				Content: llm.GetStringValue(msg.Content),
 			})
 		case llm.RoleAssistant:
 			// Handle tool calls
@@ -434,10 +460,10 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *AnthropicRequest {
 				var content []AnthropicContentBlock
 				
 				// Add text if present
-				if msg.Content != "" {
+				if msg.Content != nil && *msg.Content != "" {
 					content = append(content, AnthropicContentBlock{
 						Type: "text",
-						Text: msg.Content,
+						Text: *msg.Content,
 					})
 				}
 
@@ -458,7 +484,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *AnthropicRequest {
 			} else {
 				messages = append(messages, AnthropicMessage{
 					Role:    "assistant",
-					Content: msg.Content,
+					Content: llm.GetStringValue(msg.Content),
 				})
 			}
 		case llm.RoleTool:
@@ -469,7 +495,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *AnthropicRequest {
 					{
 						Type:    "tool_result",
 						ToolUse: msg.ToolCallID,
-						Content: msg.Content,
+						Content: *msg.Content,
 					},
 				},
 			})
@@ -539,7 +565,7 @@ func (c *Client) convertResponse(resp *AnthropicResponse) *llm.ChatResponse {
 				Index: 0,
 				Message: llm.Message{
 					Role:      llm.RoleAssistant,
-					Content:   content.String(),
+					Content:   llm.StringPtr(content.String()),
 					ToolCalls: toolCalls,
 				},
 				FinishReason: finishReason,

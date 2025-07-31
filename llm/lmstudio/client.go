@@ -107,6 +107,12 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
 
+	// Debug logging
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "\n[LM Studio] Request URL: %s/chat/completions\n", c.options.BaseURL)
+		fmt.Fprintf(os.Stderr, "[LM Studio] Request Body:\n%s\n", string(body))
+	}
+
 	// Create HTTP request
 	req, err := http.NewRequestWithContext(ctx, "POST", c.options.BaseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -130,6 +136,12 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		return nil, fmt.Errorf("failed to read response: %w", err)
 	}
 
+	// Debug logging
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		fmt.Fprintf(os.Stderr, "[LM Studio] Response Status: %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "[LM Studio] Response Body:\n%s\n", string(respBody))
+	}
+
 	// Check for errors
 	if resp.StatusCode != http.StatusOK {
 		var errResp struct {
@@ -145,6 +157,18 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 	var response llm.ChatResponse
 	if err := json.Unmarshal(respBody, &response); err != nil {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	// Debug log parsed response
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
+			fmt.Fprintf(os.Stderr, "[LM Studio] Parsed %d tool calls\n", len(response.Choices[0].Message.ToolCalls))
+			for i, tc := range response.Choices[0].Message.ToolCalls {
+				fmt.Fprintf(os.Stderr, "[LM Studio] Tool Call %d: %s with args: %s\n", i, tc.Function.Name, string(tc.Function.Arguments))
+			}
+		} else {
+			fmt.Fprintf(os.Stderr, "[LM Studio] No tool calls in response\n")
+		}
 	}
 
 	return &response, nil
@@ -309,3 +333,4 @@ func (c *Client) setHeaders(req *http.Request) {
 		req.Header.Set(k, v)
 	}
 }
+

@@ -12,10 +12,9 @@ import (
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// WikipediaParams defines the parameters for the Wikipedia tool
-type WikipediaParams struct {
-	Query string `json:"query" schema:"required" description:"Search query for Wikipedia"`
-}
+// WikipediaParams now uses generic input like Ruby
+// The input string is the search query directly
+type WikipediaParams = base.GenericParams
 
 // WikipediaTool searches Wikipedia for information
 type WikipediaTool struct {
@@ -25,20 +24,21 @@ type WikipediaTool struct {
 
 // Parameters returns the parameters struct
 func (t *WikipediaTool) Parameters() interface{} {
-	return &WikipediaParams{}
+	return &base.GenericParams{}
 }
 
 // Execute searches Wikipedia and returns the snippet of the most relevant article
 func (t *WikipediaTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args WikipediaParams
+	var args base.GenericParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	if err := Validate(&args); err != nil {
-		return "", NewToolError("VALIDATION_FAILED", "Parameter validation failed").
-			WithDetail("error", err.Error())
+	// In Ruby style, the input is the query directly
+	query := strings.TrimSpace(args.Input)
+	if query == "" {
+		return "", NewToolError("VALIDATION_FAILED", "Query cannot be empty")
 	}
 
 	// Prepare the request
@@ -46,7 +46,7 @@ func (t *WikipediaTool) Execute(ctx context.Context, params json.RawMessage) (st
 	urlParams := url.Values{}
 	urlParams.Add("action", "query")
 	urlParams.Add("list", "search")
-	urlParams.Add("srsearch", args.Query)
+	urlParams.Add("srsearch", query)
 	urlParams.Add("format", "json")
 	urlParams.Add("srlimit", "5") // Get top 5 results
 
@@ -93,12 +93,12 @@ func (t *WikipediaTool) Execute(ctx context.Context, params json.RawMessage) (st
 
 	// Check if we have results
 	if len(result.Query.Search) == 0 {
-		return fmt.Sprintf("No Wikipedia results found for query: %s", args.Query), nil
+		return fmt.Sprintf("No Wikipedia results found for query: %s", query), nil
 	}
 
 	// Format results
 	var output strings.Builder
-	output.WriteString(fmt.Sprintf("Wikipedia search results for '%s':\n\n", args.Query))
+	output.WriteString(fmt.Sprintf("Wikipedia search results for '%s':\n\n", query))
 
 	for i, item := range result.Query.Search {
 		if i > 0 {

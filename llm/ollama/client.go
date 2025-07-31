@@ -233,7 +233,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 					{
 						Index: 0,
 						Delta: &llm.Message{
-							Content: streamResp.Message.Content,
+							Content: llm.StringPtr(streamResp.Message.Content),
 						},
 					},
 				},
@@ -362,7 +362,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 
 		ollamaReq.Messages = append(ollamaReq.Messages, OllamaMessage{
 			Role:    role,
-			Content: msg.Content,
+			Content: llm.GetStringValue(msg.Content),
 		})
 	}
 
@@ -392,7 +392,7 @@ func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatRe
 				Index: 0,
 				Message: llm.Message{
 					Role:    llm.RoleAssistant,
-					Content: resp.Message.Content,
+					Content: llm.StringPtr(resp.Message.Content),
 				},
 				FinishReason: "stop",
 			},

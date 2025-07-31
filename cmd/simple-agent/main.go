@@ -105,6 +105,11 @@ func main() {
 }
 
 func runTUI(cmd *cobra.Command, args []string) error {
+	// Enable debug logging if verbose flag is set
+	if verbose {
+		os.Setenv("SIMPLE_AGENT_DEBUG", "true")
+	}
+	
 	// Create config manager
 	configManager, err := config.NewManager()
 	if err != nil {
@@ -113,7 +118,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	
 	// Get provider and model from config or flags
 	if provider == "" {
-		provider = getEnvOrDefault("DEFAULT_PROVIDER", configManager.GetDefaultProvider())
+		// First check config, then env, then default
+		provider = configManager.GetDefaultProvider()
+		if provider == "" {
+			provider = getEnvOrDefault("DEFAULT_PROVIDER", "openai")
+		}
 	}
 	if model == "" {
 		model = configManager.GetDefaultModel()
@@ -122,10 +131,19 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		}
 	}
 	
+	// Normalize provider name to lowercase for consistency
+	provider = strings.ToLower(provider)
+	
+	// Debug: Show loaded provider and model
+	if verbose {
+		fmt.Printf("Using provider: %s, model: %s\n", provider, model)
+	}
+	
+	
 	// Create initial LLM client
 	llmClient, err := createLLMClient(provider, model)
 	if err != nil {
-		return fmt.Errorf("failed to create LLM client: %w", err)
+		return fmt.Errorf("failed to create %s client: %w", provider, err)
 	}
 	defer llmClient.Close()
 	
@@ -172,6 +190,30 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Resuming session: %s\n", resume)
 	}
 	
+	// If verbose, show the enhanced system prompt (including tools)
+	if verbose {
+		// Get the system prompt from the agent's memory which includes tools
+		memory := agentInstance.GetMemory()
+		if len(memory) > 0 && memory[0].Role == "system" {
+			fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
+			fmt.Println(memory[0].Content)
+		} else {
+			fmt.Println("\n=== DEFAULT SYSTEM PROMPT ===")
+			fmt.Println(agent.DefaultConfig().SystemPrompt)
+			fmt.Println("\n=== AVAILABLE TOOLS ===")
+			toolNames := registry.List()
+			for _, name := range toolNames {
+				tool, _ := registry.Get(name)
+				if tool != nil {
+					fmt.Printf("- %s: %s\n", name, tool.Description())
+				}
+			}
+		}
+		fmt.Println("===================\n")
+		fmt.Println("Press Enter to continue...")
+		fmt.Scanln()
+	}
+	
 	// Create and run TUI (bordered version with providers)
 	p := tea.NewProgram(
 		tui.NewBorderedTUIWithProviders(llmClient, agentInstance, provider, model, providers, configManager),
@@ -185,6 +227,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
+	// Enable debug logging if verbose flag is set
+	if verbose {
+		os.Setenv("SIMPLE_AGENT_DEBUG", "true")
+	}
+	
 	query := strings.Join(args, " ")
 	
 	// Get provider and model
@@ -207,6 +254,28 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		agent.WithMaxIterations(10),
 		agent.WithTemperature(0.7),
 	)
+	
+	// If verbose, show the enhanced system prompt (including tools)
+	if verbose {
+		// Get the system prompt from the agent's memory which includes tools
+		memory := agentInstance.GetMemory()
+		if len(memory) > 0 && memory[0].Role == "system" {
+			fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
+			fmt.Println(memory[0].Content)
+		} else {
+			fmt.Println("\n=== DEFAULT SYSTEM PROMPT ===")
+			fmt.Println(agent.DefaultConfig().SystemPrompt)
+			fmt.Println("\n=== AVAILABLE TOOLS ===")
+			toolNames := registry.List()
+			for _, name := range toolNames {
+				tool, _ := registry.Get(name)
+				if tool != nil {
+					fmt.Printf("- %s: %s\n", name, tool.Description())
+				}
+			}
+		}
+		fmt.Println("===================\n")
+	}
 	
 	// Execute query
 	ctx := context.Background()
