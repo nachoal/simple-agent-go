@@ -118,6 +118,9 @@ type Agent interface {
 
 	// SetSystemPrompt updates the system prompt
 	SetSystemPrompt(prompt string)
+	
+	// SetMemory sets the conversation memory
+	SetMemory(messages []llm.Message)
 }
 
 const defaultSystemPrompt = `You are an AI assistant that can leverage external tools to answer the user.

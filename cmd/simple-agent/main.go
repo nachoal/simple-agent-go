@@ -14,6 +14,7 @@ import (
 	
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
+	"github.com/nachoal/simple-agent-go/history"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
@@ -181,13 +182,131 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		agent.WithTemperature(0.7),
 	)
 	
+	// Initialize history manager
+	historyMgr, err := history.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to initialize history: %w", err)
+	}
+	
+	// Get current working directory
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+	
+	var session *history.Session
+	var historyAgent *agent.HistoryAgent
+	
 	// Handle continue/resume flags
 	if continueConv {
-		// TODO: Load last session
-		fmt.Println("Loading last conversation...")
+		// Try to load last session for this directory
+		session, err = historyMgr.GetLastSessionForPath(cwd)
+		if err != nil {
+			fmt.Printf("No previous conversation found for this directory.\n")
+			// Start new session
+			session, err = historyMgr.StartSession(cwd, provider, model)
+			if err != nil {
+				return fmt.Errorf("failed to start session: %w", err)
+			}
+		} else {
+			fmt.Printf("Continuing conversation from %s...\n", session.UpdatedAt.Format("Jan 02 15:04"))
+			// Update provider/model from session if different
+			if session.Provider != provider || session.Model != model {
+				provider = session.Provider
+				model = session.Model
+				// Recreate client with session's provider/model
+				llmClient.Close()
+				llmClient, err = createLLMClient(provider, model)
+				if err != nil {
+					return fmt.Errorf("failed to create %s client: %w", provider, err)
+				}
+				agentInstance = agent.New(llmClient,
+					agent.WithMaxIterations(10),
+					agent.WithTemperature(0.7),
+				)
+			}
+		}
 	} else if resume != "" {
-		// TODO: Load specific session or show picker
-		fmt.Printf("Resuming session: %s\n", resume)
+		// Show session picker or load specific session
+		if resume == "list" {
+			sessions, err := historyMgr.ListSessionsForPath(cwd)
+			if err != nil {
+				return fmt.Errorf("failed to list sessions: %w", err)
+			}
+			
+			if len(sessions) == 0 {
+				fmt.Println("No previous conversations found for this directory.")
+				// Start new session
+				session, err = historyMgr.StartSession(cwd, provider, model)
+				if err != nil {
+					return fmt.Errorf("failed to start session: %w", err)
+				}
+			} else {
+				// Show session picker
+				picker := tui.NewSessionPicker(sessions)
+				p := tea.NewProgram(picker)
+				
+				pickerModel, err := p.Run()
+				if err != nil {
+					return fmt.Errorf("failed to run session picker: %w", err)
+				}
+				
+				// Check if a session was selected
+				if pickerResult, ok := pickerModel.(*tui.SessionPicker); ok {
+					// Find selected session
+					for _, s := range sessions {
+						if s.ID == pickerResult.SelectedSessionID {
+							session, err = historyMgr.LoadSession(s.ID)
+							if err != nil {
+								return fmt.Errorf("failed to load session: %w", err)
+							}
+							break
+						}
+					}
+				}
+				
+				if session == nil {
+					// User cancelled or no selection
+					return nil
+				}
+			}
+		} else {
+			// Load specific session ID
+			session, err = historyMgr.LoadSession(resume)
+			if err != nil {
+				return fmt.Errorf("failed to load session %s: %w", resume, err)
+			}
+		}
+		
+		// Update provider/model from session
+		if session != nil && (session.Provider != provider || session.Model != model) {
+			provider = session.Provider
+			model = session.Model
+			// Recreate client with session's provider/model
+			llmClient.Close()
+			llmClient, err = createLLMClient(provider, model)
+			if err != nil {
+				return fmt.Errorf("failed to create %s client: %w", provider, err)
+			}
+			agentInstance = agent.New(llmClient,
+				agent.WithMaxIterations(10),
+				agent.WithTemperature(0.7),
+			)
+		}
+	} else {
+		// Start new session
+		session, err = historyMgr.StartSession(cwd, provider, model)
+		if err != nil {
+			return fmt.Errorf("failed to start session: %w", err)
+		}
+	}
+	
+	// Create history-aware agent
+	historyAgent = agent.NewHistoryAgent(agentInstance, historyMgr, session)
+	
+	// Restore memory if continuing/resuming
+	if continueConv || resume != "" {
+		historyAgent.RestoreMemoryFromSession(session)
 	}
 	
 	// If verbose, show the enhanced system prompt (including tools)
@@ -214,9 +333,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Scanln()
 	}
 	
-	// Create and run TUI (bordered version with providers)
+	// Create and run TUI (bordered version with providers and history)
 	p := tea.NewProgram(
-		tui.NewBorderedTUIWithProviders(llmClient, agentInstance, provider, model, providers, configManager),
+		tui.NewBorderedTUIWithHistory(llmClient, historyAgent, provider, model, providers, configManager),
 	)
 	
 	if _, err := p.Run(); err != nil {

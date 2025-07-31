@@ -120,6 +120,14 @@ func NewBorderedTUIWithProviders(llmClient llm.Client, agentInstance agent.Agent
 	return tui
 }
 
+// NewBorderedTUIWithHistory creates a new bordered TUI with history support
+func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.HistoryAgent, provider, model string, providers map[string]llm.Client, configManager *config.Manager) *BorderedTUI {
+	tui := NewBorderedTUI(llmClient, historyAgent, provider, model)
+	tui.providers = providers
+	tui.configManager = configManager
+	return tui
+}
+
 func (m BorderedTUI) Init() tea.Cmd {
 	// Initialize with a default width if not set
 	if m.width == 0 {
