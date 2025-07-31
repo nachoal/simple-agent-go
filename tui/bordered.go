@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
@@ -38,6 +39,9 @@ type BorderedTUI struct {
 	
 	// Glamour renderer
 	renderer *glamour.TermRenderer
+	
+	// Spinner for thinking state
+	spinner spinner.Model
 }
 
 // BorderedMessage represents a chat message
@@ -87,6 +91,11 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		glamour.WithWordWrap(74),
 	)
 	
+	// Initialize spinner
+	s := spinner.New()
+	s.Spinner = spinner.Dot
+	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // Same color as model
+	
 	tui := &BorderedTUI{
 		agent:       agentInstance,
 		llmClient:   llmClient,
@@ -97,6 +106,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		width:       80, // Default terminal width
 		initialized: false,
 		renderer:    renderer,
+		spinner:     s,
 	}
 	
 	return tui
@@ -123,6 +133,12 @@ func (m BorderedTUI) Init() tea.Cmd {
 func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 	var cmd tea.Cmd
+
+	// Update spinner if we're thinking
+	if m.isThinking {
+		m.spinner, cmd = m.spinner.Update(msg)
+		cmds = append(cmds, cmd)
+	}
 
 	// If we're in model selection mode, delegate to the model selector
 	if m.selectingModel && m.modelSelector != nil {
@@ -232,6 +248,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Send to agent
 					m.isThinking = true
 					cmds = append(cmds, m.sendMessage(value))
+					cmds = append(cmds, m.spinner.Tick)
 				}
 			}
 			return m, tea.Batch(cmds...)
@@ -390,9 +407,9 @@ func (m BorderedTUI) View() string {
 		b.WriteString("\n")
 	}
 	
-	// Show thinking indicator
+	// Show thinking indicator with spinner
 	if m.isThinking {
-		b.WriteString("🤔 Thinking...\n\n")
+		b.WriteString(fmt.Sprintf("%s Thinking...\n\n", m.spinner.View()))
 	}
 	
 	// Input area with border and prompt
