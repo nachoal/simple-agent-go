@@ -68,8 +68,11 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		request.Model = c.options.DefaultModel
 	}
 
+	// Create the request for OpenAI API
+	openAIReq := c.buildOpenAIRequest(request)
+
 	// Create request body
-	body, err := json.Marshal(request)
+	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -132,8 +135,11 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 	// Enable streaming
 	request.Stream = true
 
+	// Create the request for OpenAI API
+	openAIReq := c.buildOpenAIRequest(request)
+
 	// Create request body
-	body, err := json.Marshal(request)
+	body, err := json.Marshal(openAIReq)
 	if err != nil {
 		return nil, fmt.Errorf("failed to marshal request: %w", err)
 	}
@@ -317,4 +323,72 @@ func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 	}
 
 	return fmt.Errorf("max retries exceeded: %w", lastErr)
+}
+
+// buildOpenAIRequest creates an OpenAI-specific request from the generic ChatRequest
+// It handles model-specific parameter differences for o3 models:
+// - Uses max_completion_tokens instead of max_tokens
+// - Only supports temperature of 1 (default)
+// - Excludes unsupported parameters like top_p, frequency_penalty, and presence_penalty
+func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interface{} {
+	// Create a map from the request
+	reqMap := make(map[string]interface{})
+	
+	// Always include these fields
+	reqMap["model"] = request.Model
+	reqMap["messages"] = request.Messages
+	
+	// Handle temperature based on model
+	modelLower := strings.ToLower(request.Model)
+	isO3Model := strings.HasPrefix(modelLower, "o3") || modelLower == "o3-mini"
+	
+	if request.Temperature > 0 {
+		// O3 models only support temperature of 1
+		if isO3Model && request.Temperature != 1.0 {
+			// Silently use the default temperature of 1 for o3 models
+			// We don't include it in the request since 1 is the default
+		} else if !isO3Model {
+			// For non-o3 models, include the temperature
+			reqMap["temperature"] = request.Temperature
+		}
+	}
+	
+	// O3 models may have restrictions on other parameters too
+	if request.TopP > 0 && !isO3Model {
+		reqMap["top_p"] = request.TopP
+	}
+	if request.Stream {
+		reqMap["stream"] = request.Stream
+	}
+	if len(request.Tools) > 0 {
+		reqMap["tools"] = request.Tools
+	}
+	if request.ToolChoice != nil {
+		reqMap["tool_choice"] = request.ToolChoice
+	}
+	if request.ResponseFormat != nil {
+		reqMap["response_format"] = request.ResponseFormat
+	}
+	
+	// O3 models may not support penalty parameters
+	if request.FrequencyPenalty > 0 && !isO3Model {
+		reqMap["frequency_penalty"] = request.FrequencyPenalty
+	}
+	if request.PresencePenalty > 0 && !isO3Model {
+		reqMap["presence_penalty"] = request.PresencePenalty
+	}
+	if len(request.Stop) > 0 {
+		reqMap["stop"] = request.Stop
+	}
+	
+	// Handle max_tokens vs max_completion_tokens based on model
+	if request.MaxTokens > 0 {
+		if isO3Model {
+			reqMap["max_completion_tokens"] = request.MaxTokens
+		} else {
+			reqMap["max_tokens"] = request.MaxTokens
+		}
+	}
+	
+	return reqMap
 }
