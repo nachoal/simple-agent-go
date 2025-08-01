@@ -89,3 +89,13 @@ go mod download
 - Lipgloss styling
 - Cobra CLI framework
 - godotenv for environment variables
+
+## Pull Request Workflow
+When requested to "create a PR" or similar, use the GitHub CLI (gh) to create a pull request with:
+- A clear, descriptive title
+- A comprehensive description including:
+  - Summary of changes
+  - Implementation details
+  - Benefits and impact
+- Proper formatting with headers and bullet points
+- Include "💘 Generated with Crush" signature
