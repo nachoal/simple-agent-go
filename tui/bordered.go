@@ -654,8 +654,15 @@ func (m BorderedTUI) View() string {
 	if m.isThinking {
 		b.WriteString(fmt.Sprintf("%s Thinking...\n\n", m.spinner.View()))
 	} else {
-		// When not thinking, add empty line to ensure proper spacing
-		// This prevents the input box from overwriting previous content
+		// When not thinking, add extra spacing based on textarea height
+		// This prevents border overlap when printing messages
+		extraLines := m.textarea.Height()
+		if extraLines > 1 {
+			// Add extra newlines for multi-line input to push border down
+			for i := 0; i < extraLines; i++ {
+				b.WriteString("\n")
+			}
+		}
 		b.WriteString("\n")
 	}
 	
