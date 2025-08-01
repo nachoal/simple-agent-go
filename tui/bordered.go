@@ -677,6 +677,7 @@ func (m BorderedTUI) View() string {
 		PaddingRight(1).
 		Render(promptedInput)
 	b.WriteString(styledInput)
+	b.WriteString("\n") // Ensure cursor moves to next line after box
 	
 	return b.String()
 }
