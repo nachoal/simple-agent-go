@@ -92,13 +92,7 @@ func (c *Client) checkConnection(ctx context.Context) error {
 func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatResponse, error) {
 	// Set default model if not specified
 	if request.Model == "" {
-		// Try to get the first available model
-		models, err := c.ListModels(ctx)
-		if err == nil && len(models) > 0 {
-			request.Model = models[0].ID
-		} else {
-			request.Model = c.options.DefaultModel
-		}
+		request.Model = c.options.DefaultModel
 	}
 
 	// Create request body
@@ -178,13 +172,7 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-chan llm.StreamEvent, error) {
 	// Set default model if not specified
 	if request.Model == "" {
-		// Try to get the first available model
-		models, err := c.ListModels(ctx)
-		if err == nil && len(models) > 0 {
-			request.Model = models[0].ID
-		} else {
-			request.Model = c.options.DefaultModel
-		}
+		request.Model = c.options.DefaultModel
 	}
 
 	// Enable streaming
