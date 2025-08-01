@@ -399,8 +399,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.event.Type {
 		case agent.EventTypeToolStart:
 			if msg.event.Tool != nil {
-				// Stop showing "Thinking..." when tools start
-				m.isThinking = false
+				// Keep showing "Thinking..." when tools start - show continuous indicator
+				m.isThinking = true
 				m.showingTools = true
 				
 				// Add to active tools
