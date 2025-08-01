@@ -83,15 +83,16 @@ func (m *ModelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "esc", "ctrl+c":
-			// Don't quit on 'q' as it might be part of search
-			// The parent component will handle the exit
-			return m, nil
+			// Quit without selection
+			return m, tea.Quit
 		case "enter":
 			if i, ok := m.list.SelectedItem().(ModelItem); ok {
 				m.selected = i
 				if m.onSelect != nil {
 					return m, m.onSelect(i.Provider, i.Model.ID)
 				}
+				// Quit to return selection
+				return m, tea.Quit
 			}
 		}
 

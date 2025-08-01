@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
+	"github.com/nachoal/simple-agent-go/history"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools/registry"
 )
@@ -25,16 +26,15 @@ type BorderedTUI struct {
 	provider      string
 	model         string
 	textarea      textarea.Model
-	messages      []BorderedMessage
+	historyForAgent []llm.Message // Keep history only for agent context, not UI
 	width         int
 	height        int
 	isThinking    bool
+	typing        strings.Builder // For future streaming support
 	err           error
 	initialized   bool // Track if we've received the first WindowSizeMsg
 	
-	// Model selection
-	selectingModel bool
-	modelSelector  tea.Model
+	// Providers for model selection
 	providers      map[string]llm.Client
 	configManager  *config.Manager
 	
@@ -53,13 +53,11 @@ type BorderedTUI struct {
 	renderPending  bool
 	toolEventChan  chan agent.StreamEvent
 	toolsUsedInLastQuery map[string]time.Duration
+	
+	// Border style for input
+	borderStyle   lipgloss.Style
 }
 
-// BorderedMessage represents a chat message
-type BorderedMessage struct {
-	Role    string
-	Content string
-}
 
 // ActiveTool represents a currently executing tool
 type ActiveTool struct {
@@ -176,13 +174,18 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // Same color as model
 	
+	// Border style for input
+	borderStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("15"))
+	
 	tui := &BorderedTUI{
 		agent:       agentInstance,
 		llmClient:   llmClient,
 		provider:    provider,
 		model:       model,
 		textarea:    ta,
-		messages:    []BorderedMessage{},
+		historyForAgent: []llm.Message{},
 		width:       80, // Default terminal width
 		initialized: false,
 		renderer:    renderer,
@@ -192,6 +195,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		toolErrors:     []ToolError{},
 		lastRender:     time.Now(),
 		toolsUsedInLastQuery: make(map[string]time.Duration),
+		borderStyle: borderStyle,
 	}
 	
 	return tui
@@ -211,18 +215,18 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 	tui.providers = providers
 	tui.configManager = configManager
 	
-	// Load messages from history if available
+	// Print history immediately before TUI starts
 	if historyAgent != nil {
 		session := historyAgent.GetSession()
 		if session != nil && len(session.Messages) > 0 {
 			// Debug output
 			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
-				fmt.Fprintf(os.Stderr, "[TUI] Loading %d messages from session %s\n", len(session.Messages), session.ID)
+				fmt.Fprintf(os.Stderr, "[TUI] Found %d messages in session %s\n", len(session.Messages), session.ID)
 			}
 			
-			// Convert history messages to TUI messages
+			// Print history messages to stdout
 			for _, msg := range session.Messages {
-				// Skip system messages in the display
+				// Skip system messages
 				if msg.Role == "system" {
 					continue
 				}
@@ -232,14 +236,20 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 					content = *msg.Content
 				}
 				
-				tui.messages = append(tui.messages, BorderedMessage{
-					Role:    msg.Role,
-					Content: content,
+				// Also populate historyForAgent for context
+				tui.historyForAgent = append(tui.historyForAgent, llm.Message{
+					Role:    llm.Role(msg.Role),
+					Content: &content,
 				})
-			}
-			
-			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
-				fmt.Fprintf(os.Stderr, "[TUI] Loaded %d messages into TUI display\n", len(tui.messages))
+				
+				// Print to stdout
+				switch msg.Role {
+				case "user":
+					fmt.Println(renderUserMessage(content))
+				case "assistant":
+					fmt.Println(renderAssistantMessage(tui.renderer, content))
+				}
+				fmt.Println() // Empty line between messages
 			}
 		}
 	}
@@ -247,11 +257,106 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 	return tui
 }
 
+// Helper functions for rendering messages to stdout with styling
+func renderUserMessage(content string) string {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	return fmt.Sprintf("👤 You: %s", style.Render(content))
+}
+
+func renderAssistantMessage(renderer *glamour.TermRenderer, content string) string {
+	if renderer != nil {
+		rendered, err := renderer.Render(content)
+		if err == nil {
+			return fmt.Sprintf("🤖 Assistant:\n%s", strings.TrimRight(rendered, "\n"))
+		}
+	}
+	// Fallback without glamour
+	return fmt.Sprintf("🤖 Assistant: %s", content)
+}
+
+func renderCommandMessage(content string) string {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	return style.Render(content)
+}
+
+func renderErrorMessage(content string) string {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
+	return style.Render(fmt.Sprintf("❌ %s", content))
+}
+
+func renderToolMessage(content string) string {
+	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+	return style.Render(content)
+}
+
+// PrintHeader prints the TUI header to stdout before the TUI starts
+func PrintHeader(provider, model string) {
+	// Colors matching Python version
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // #5B9BD5
+	toolsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("80"))  // #4ECDC4
+	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))   // #6B7280
+	
+	verboseIndicator := ""
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		verboseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true) // Red
+		verboseIndicator = " | " + verboseStyle.Render("[VERBOSE]")
+	}
+	
+	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s%s",
+		headerStyle.Render("Simple Agent Go"),
+		modelStyle.Render(model),
+		modelStyle.Render(provider),
+		verboseIndicator)
+	
+	toolCount := len(registry.List())
+	header2 := fmt.Sprintf("%s | %s",
+		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
+		cmdStyle.Render("Commands: /help, /tools, /model, /system, /verbose, /clear, /exit"))
+	
+	fmt.Println(header1)
+	fmt.Println(header2)
+	fmt.Println() // Empty line after header
+}
+
+// replayHistory prints historical messages to stdout for --continue support
+func replayHistory(session *history.Session, renderer *glamour.TermRenderer) tea.Cmd {
+	return func() tea.Msg {
+		if session == nil || len(session.Messages) == 0 {
+			return nil
+		}
+		
+		for _, msg := range session.Messages {
+			// Skip system messages
+			if msg.Role == "system" {
+				continue
+			}
+			
+			content := ""
+			if msg.Content != nil {
+				content = *msg.Content
+			}
+			
+			switch msg.Role {
+			case "user":
+				tea.Println(renderUserMessage(content))
+			case "assistant":
+				tea.Println(renderAssistantMessage(renderer, content))
+			}
+			tea.Println() // Empty line between messages
+		}
+		
+		return nil
+	}
+}
+
 func (m BorderedTUI) Init() tea.Cmd {
 	// Initialize with a default width if not set
 	if m.width == 0 {
 		m.width = 80 // Default terminal width
 	}
+	
+	// Just start the textarea blink
 	return textarea.Blink
 }
 
@@ -267,61 +372,34 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, cmd)
 	}
 
-	// If we're in model selection mode, delegate to the model selector
-	if m.selectingModel && m.modelSelector != nil {
-		switch msg := msg.(type) {
-		case tea.WindowSizeMsg:
-			// Forward window size to model selector
-			m.modelSelector, cmd = m.modelSelector.Update(msg)
-			return m, cmd
-		case tea.KeyMsg:
-			// Allow escape or ctrl+c to exit model selection
-			if msg.String() == "esc" || msg.String() == "ctrl+c" {
-				m.selectingModel = false
-				m.modelSelector = nil
-				m.textarea.Focus()
-				return m, nil
-			}
-		case modelSelectedMsg:
-			// Model was selected, update our state
-			m.provider = msg.provider
-			m.model = msg.model
-			m.selectingModel = false
-			m.modelSelector = nil
-			
-			// Save to config if we have a config manager
-			if m.configManager != nil {
-				if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
-					m.messages = append(m.messages, BorderedMessage{
-						Role:    "error",
-						Content: fmt.Sprintf("Failed to save config: %v", err),
-					})
-				}
-			}
-			
-			// Update the agent with the new model
-			if newClient, ok := m.providers[msg.provider]; ok {
-				m.llmClient = newClient
-				m.agent = agent.New(newClient,
-					agent.WithMaxIterations(10),
-					agent.WithTemperature(0.7),
-				)
-			}
-			
-			m.messages = append(m.messages, BorderedMessage{
-				Role:    "command",
-				Content: fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model),
-			})
-			m.textarea.Focus()
-			return m, nil
-		}
-		
-		// Update the model selector
-		m.modelSelector, cmd = m.modelSelector.Update(msg)
-		return m, cmd
-	}
 
 	switch msg := msg.(type) {
+	case modelSelectedMsg:
+		// Model was selected, update our state
+		m.provider = msg.provider
+		m.model = msg.model
+		
+		// Save to config if we have a config manager
+		if m.configManager != nil {
+			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
+				// We'll print the error with the success message
+				m.err = fmt.Errorf("failed to save config: %w", err)
+			}
+		}
+		
+		// Update the agent with the new model
+		if newClient, ok := m.providers[msg.provider]; ok {
+			m.llmClient = newClient
+			m.agent = agent.New(newClient,
+				agent.WithMaxIterations(10),
+				agent.WithTemperature(0.7),
+			)
+		}
+		
+		// Print model switch message
+		m.textarea.Focus()
+		return m, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
+		
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
@@ -334,15 +412,13 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.textarea.SetWidth(textareaWidth)
 		
+		// Update border style width
+		m.borderStyle = m.borderStyle.Width(m.width - 2)
+		
 		// Adjust height based on content
 		m.adjustTextareaHeight()
 		
-		// Only clear screen on actual resize, not initial setup
-		if m.initialized {
-			// This is a resize event, clear the screen
-			return m, tea.ClearScreen
-		}
-		// This is the initial WindowSizeMsg
+		// Mark as initialized but don't clear screen for native scrollback
 		m.initialized = true
 		return m, nil
 		
@@ -352,25 +428,29 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 			
 		case tea.KeyCtrlL:
-			m.messages = []BorderedMessage{}
-			return m, nil
+			// Clear history for agent context
+			m.historyForAgent = []llm.Message{}
+			// Clear screen command will clear the terminal
+			return m, tea.ClearScreen
 			
 		case tea.KeyEnter:
 			// Send the message on Enter
 			if !m.isThinking {
 				value := m.textarea.Value()
 				if strings.TrimSpace(value) != "" {
-					// Add user message
-					m.messages = append(m.messages, BorderedMessage{
-						Role:    "user",
-						Content: value,
+					// Print user message to stdout
+					cmds = append(cmds, tea.Printf("%s\n\n", renderUserMessage(value)))
+					
+					// Add to history for agent context
+					m.historyForAgent = append(m.historyForAgent, llm.Message{
+						Role:    llm.RoleUser,
+						Content: &value,
 					})
 					
 					// Clear input and reset height
 					m.textarea.Reset()
 					m.textarea.SetHeight(1)
 					m.textarea.Blur()
-					
 					
 					// Send to agent
 					m.isThinking = true
@@ -416,13 +496,10 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Track tool usage
 				m.toolsUsedInLastQuery[msg.event.Tool.Name] = 0
 				
-				// Add tool start message to chat history
+				// Print tool start message immediately
 				argStr := m.formatArguments(msg.event.Tool.Args)
 				toolStartMsg := fmt.Sprintf("🔧 Calling tool: %s %s", msg.event.Tool.Name, argStr)
-				m.messages = append(m.messages, BorderedMessage{
-					Role:    "tool_info",
-					Content: toolStartMsg,
-				})
+				cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(toolStartMsg)))
 			}
 			
 		case agent.EventTypeToolProgress:
@@ -453,9 +530,9 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					duration := time.Since(activeTool.StartTime)
 					m.toolsUsedInLastQuery[activeTool.Name] = duration
 					
-					// Add tool completion message to chat history
+					// Print tool completion message immediately
 					if msg.event.Tool.Error != nil {
-						// Add error message
+						// Track error
 						m.toolErrors = append(m.toolErrors, ToolError{
 							ID:    msg.event.Tool.ID,
 							Name:  activeTool.Name,
@@ -464,24 +541,19 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						})
 						
 						errorMsg := fmt.Sprintf("❌ Tool %s failed: %v", activeTool.Name, msg.event.Tool.Error)
-						m.messages = append(m.messages, BorderedMessage{
-							Role:    "tool_info",
-							Content: errorMsg,
-						})
+						cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(errorMsg)))
 					} else {
-						// Add success message with duration
+						// Print success message with duration
 						successMsg := fmt.Sprintf("✅ Tool %s completed in %v", activeTool.Name, duration.Round(time.Millisecond))
-						m.messages = append(m.messages, BorderedMessage{
-							Role:    "tool_info",
-							Content: successMsg,
-						})
+						cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(successMsg)))
 					}
 				}
 			}
 		}
 		
-		// Continue listening for more events
-		return m, m.listenForToolEvents()
+		// Continue listening for more events with any accumulated commands
+		cmds = append(cmds, m.listenForToolEvents())
+		return m, tea.Batch(cmds...)
 		
 	case borderedResponseMsg:
 		m.isThinking = false
@@ -498,49 +570,57 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		
 		if msg.isClear {
-			m.messages = []BorderedMessage{}
+			// Clear history for agent context
+			m.historyForAgent = []llm.Message{}
 			m.textarea.Focus()
-			return m, nil
+			return m, tea.ClearScreen
 		}
 		
 		if msg.isModelSelect {
-			// Trigger model selection
-			m.selectingModel = true
-			m.textarea.Blur()
-			
-			// Create the model selector with a callback
-			onSelect := func(provider, model string) tea.Cmd {
-				return func() tea.Msg {
-					return modelSelectedMsg{provider: provider, model: model}
+			// Launch model selector in alt-screen mode
+			return m, func() tea.Msg {
+				// Create the model selector
+				selector := NewModelSelector(m.providers, nil)
+				
+				// Run it in a separate program with alt-screen
+				p := tea.NewProgram(selector, tea.WithAltScreen())
+				finalModel, err := p.Run()
+				if err != nil {
+					return borderedResponseMsg{err: err}
 				}
+				
+				// Check if a model was selected
+				if ms, ok := finalModel.(*ModelSelector); ok && ms.selected.Provider != "" {
+					return modelSelectedMsg{
+						provider: ms.selected.Provider,
+						model:    ms.selected.Model.ID,
+					}
+				}
+				
+				// No selection made
+				return nil
 			}
-			
-			m.modelSelector = NewModelSelector(m.providers, onSelect)
-			// Send the current window size to the model selector
-			if m.width > 0 && m.height > 0 {
-				m.modelSelector, _ = m.modelSelector.Update(tea.WindowSizeMsg{
-					Width:  m.width,
-					Height: m.height,
-				})
-			}
-			return m, m.modelSelector.Init()
 		}
 		
 		// Handle normal messages
 		if msg.err != nil {
-			m.messages = append(m.messages, BorderedMessage{
-				Role:    "error",
-				Content: fmt.Sprintf("Error: %v", msg.err),
-			})
+			// Print error message
+			return m, tea.Printf("%s\n\n", renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
 		} else if msg.content != "" {
-			role := "assistant"
 			if msg.isCommand {
-				role = "command"
+				// Print command output
+			m.textarea.Focus()
+				return m, tea.Printf("%s\n\n", renderCommandMessage(msg.content))
+			} else {
+				// Print assistant message
+				content := msg.content
+				m.historyForAgent = append(m.historyForAgent, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: &content,
+				})
+				m.textarea.Focus()
+				return m, tea.Printf("%s\n\n", renderAssistantMessage(m.renderer, msg.content))
 			}
-			m.messages = append(m.messages, BorderedMessage{
-				Role:    role,
-				Content: msg.content,
-			})
 		}
 		m.textarea.Focus()
 		return m, nil
@@ -560,96 +640,23 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m BorderedTUI) View() string {
-	// If we're showing the model selector, display it instead
-	if m.selectingModel && m.modelSelector != nil {
-		return m.modelSelector.View()
-	}
-	
-	// Ensure we have a valid width
-	width := m.width
-	if width == 0 {
-		width = 80 // Default fallback
-	}
-	
-	// Colors matching Python version
-	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
-	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // #5B9BD5
-	toolsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("80"))  // #4ECDC4
-	cmdStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))   // #6B7280
-	borderStyle := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("15"))
-	
 	var b strings.Builder
 	
-	// Header - matching Python version exactly
-	verboseIndicator := ""
-	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
-		verboseStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true) // Red
-		verboseIndicator = " | " + verboseStyle.Render("[VERBOSE]")
-	}
+	// Only show the live region: streaming content (future) + spinner + input box
 	
-	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s%s",
-		headerStyle.Render("Simple Agent Go"),
-		modelStyle.Render(m.model),
-		modelStyle.Render(m.provider),
-		verboseIndicator)
-	
-	toolCount := len(registry.List())
-	header2 := fmt.Sprintf("%s | %s",
-		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
-		cmdStyle.Render("Commands: /help, /tools, /model, /system, /verbose, /clear, /exit"))
-	
-	b.WriteString(header1 + "\n")
-	b.WriteString(header2 + "\n\n")
-	
-	// Messages
-	// Create a style for wrapping text based on terminal width
-	messageStyle := lipgloss.NewStyle().Width(width - 4) // Leave some margin
-	
-	for _, msg := range m.messages {
-		switch msg.Role {
-		case "user":
-			// Render with emoji prefix and wrapped text
-			content := messageStyle.Render(fmt.Sprintf("👤 You: %s", msg.Content))
-			b.WriteString(content + "\n")
-		case "assistant":
-			// Use glamour if available, otherwise fallback
-			if m.renderer != nil {
-				rendered, err := m.renderer.Render(msg.Content)
-				if err == nil {
-					b.WriteString("🤖 Assistant:\n")
-					b.WriteString(strings.TrimRight(rendered, "\n") + "\n")
-				} else {
-					// Fallback
-					content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
-					b.WriteString(content + "\n")
-				}
-			} else {
-				// No renderer
-				content := messageStyle.Render(fmt.Sprintf("🤖 Assistant: %s", msg.Content))
-				b.WriteString(content + "\n")
-			}
-		case "command":
-			// Command output - no prefix, just the content
-			content := messageStyle.Render(msg.Content)
-			b.WriteString(content + "\n")
-		case "error":
-			// Render with emoji prefix and wrapped text
-			content := messageStyle.Render(fmt.Sprintf("❌ %s", msg.Content))
-			b.WriteString(content + "\n")
-		case "tool_info":
-			// Tool usage information - style differently
-			toolInfoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-			content := toolInfoStyle.Render(msg.Content)
-			b.WriteString(content + "\n")
-		}
-		b.WriteString("\n")
+	// Show any streaming content (for future implementation)
+	if m.typing.Len() > 0 {
+		b.WriteString(m.typing.String())
+		b.WriteString("\n\n")
 	}
 	
 	// Show thinking indicator with spinner
 	if m.isThinking {
 		b.WriteString(fmt.Sprintf("%s Thinking...\n\n", m.spinner.View()))
+	} else {
+		// When not thinking, add empty line to ensure proper spacing
+		// This prevents the input box from overwriting previous content
+		b.WriteString("\n")
 	}
 	
 	// Input area with border and prompt
@@ -658,8 +665,7 @@ func (m BorderedTUI) View() string {
 	promptedInput := "> " + inputContent
 	
 	// Style the input box with border
-	styledInput := borderStyle.
-		Width(width - 2).
+	styledInput := m.borderStyle.
 		PaddingLeft(1).
 		PaddingRight(1).
 		Render(promptedInput)
