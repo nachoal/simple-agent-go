@@ -106,3 +106,13 @@ func NewGoogleSearchTool() Tool {
 		searchEngineID: os.Getenv("GOOGLE_CX"),
 	}
 }
+
+// NewDemoTool creates a new demo tool for testing
+func NewDemoTool() Tool {
+	return &DemoTool{
+		BaseTool: base.BaseTool{
+			ToolName: "demo_tool",
+			ToolDesc: "Demo tool for testing tool visibility. Supports operations: fast, slow, error. Can simulate long-running tasks with progress.",
+		},
+	}
+}

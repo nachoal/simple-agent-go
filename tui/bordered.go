@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
@@ -42,12 +43,91 @@ type BorderedTUI struct {
 	
 	// Spinner for thinking state
 	spinner spinner.Model
+	
+	// Tool execution tracking
+	activeTools    map[string]*ActiveTool
+	completedTools []CompletedTool
+	toolErrors     []ToolError
+	showingTools   bool
+	lastRender     time.Time
+	renderPending  bool
+	toolEventChan  chan agent.StreamEvent
+	toolsUsedInLastQuery map[string]time.Duration
 }
 
 // BorderedMessage represents a chat message
 type BorderedMessage struct {
 	Role    string
 	Content string
+}
+
+// ActiveTool represents a currently executing tool
+type ActiveTool struct {
+	ID               string
+	Name             string
+	Args             map[string]interface{}
+	StartTime        time.Time
+	Status           ToolStatus
+	Output           *CircularBuffer
+	Progress         float64
+	LastProgressText string
+	LastUpdate       time.Time
+}
+
+
+// CompletedTool represents a completed tool execution
+type CompletedTool struct {
+	ID           string
+	Name         string
+	CompletedAt  time.Time
+	Success      bool
+	OutputSample string
+}
+
+// ToolError represents a tool error
+type ToolError struct {
+	ID      string
+	Name    string
+	Error   error
+	Time    time.Time
+	Details string
+}
+
+// CircularBuffer manages output with a size limit
+type CircularBuffer struct {
+	lines    []string
+	maxLines int
+	total    int
+}
+
+// NewCircularBuffer creates a new circular buffer
+func NewCircularBuffer(maxLines int) *CircularBuffer {
+	return &CircularBuffer{
+		lines:    make([]string, 0, maxLines),
+		maxLines: maxLines,
+	}
+}
+
+// Add adds a line to the buffer
+func (cb *CircularBuffer) Add(line string) {
+	cb.total++
+	if len(cb.lines) < cb.maxLines {
+		cb.lines = append(cb.lines, line)
+	} else {
+		// Shift and add
+		copy(cb.lines, cb.lines[1:])
+		cb.lines[len(cb.lines)-1] = line
+	}
+}
+
+// GetLines returns current lines
+func (cb *CircularBuffer) GetLines() []string {
+	return cb.lines
+}
+
+// HasOverflow returns true if more lines were added than capacity
+func (cb *CircularBuffer) HasOverflow() bool {
+	return cb.total > cb.maxLines
 }
 
 // NewBorderedTUI creates a new bordered TUI
@@ -107,6 +187,11 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		initialized: false,
 		renderer:    renderer,
 		spinner:     s,
+		activeTools:    make(map[string]*ActiveTool),
+		completedTools: []CompletedTool{},
+		toolErrors:     []ToolError{},
+		lastRender:     time.Now(),
+		toolsUsedInLastQuery: make(map[string]time.Duration),
 	}
 	
 	return tui
@@ -289,15 +374,123 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					
 					// Send to agent
 					m.isThinking = true
+					m.showingTools = false
+					
+					// Create event channel and store it
+					m.toolEventChan = make(chan agent.StreamEvent, 100)
+					
 					cmds = append(cmds, m.sendMessage(value))
 					cmds = append(cmds, m.spinner.Tick)
+					cmds = append(cmds, m.listenForToolEvents())
 				}
 			}
 			return m, tea.Batch(cmds...)
 		}
 		
+	case toolEventMsg:
+		// Handle tool events
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[TUI] Received tool event: %s\n", msg.event.Type)
+			if msg.event.Tool != nil {
+				fmt.Fprintf(os.Stderr, "[TUI] Tool: %s (ID: %s)\n", msg.event.Tool.Name, msg.event.Tool.ID)
+			}
+		}
+		
+		switch msg.event.Type {
+		case agent.EventTypeToolStart:
+			if msg.event.Tool != nil {
+				// Stop showing "Thinking..." when tools start
+				m.isThinking = false
+				m.showingTools = true
+				
+				// Add to active tools
+				m.activeTools[msg.event.Tool.ID] = &ActiveTool{
+					ID:        msg.event.Tool.ID,
+					Name:      msg.event.Tool.Name,
+					Args:      msg.event.Tool.Args,
+					StartTime: time.Now(),
+					Status:    ToolStatusRunning,
+					Output:    NewCircularBuffer(20),
+				}
+				
+				// Track tool usage
+				m.toolsUsedInLastQuery[msg.event.Tool.Name] = 0
+				
+				// Add tool start message to chat history
+				argStr := m.formatArguments(msg.event.Tool.Args)
+				toolStartMsg := fmt.Sprintf("🔧 Calling tool: %s %s", msg.event.Tool.Name, argStr)
+				m.messages = append(m.messages, BorderedMessage{
+					Role:    "tool_info",
+					Content: toolStartMsg,
+				})
+			}
+			
+		case agent.EventTypeToolProgress:
+			if msg.event.Tool != nil && m.activeTools[msg.event.Tool.ID] != nil {
+				tool := m.activeTools[msg.event.Tool.ID]
+				tool.Progress = msg.event.Tool.Progress
+				tool.LastProgressText = msg.event.Tool.Message
+				tool.LastUpdate = time.Now()
+			}
+			
+		case agent.EventTypeToolResult:
+			if msg.event.Tool != nil {
+				// Move from active to completed
+				if activeTool := m.activeTools[msg.event.Tool.ID]; activeTool != nil {
+					delete(m.activeTools, msg.event.Tool.ID)
+					
+					// Add to completed
+					completedTool := CompletedTool{
+						ID:           msg.event.Tool.ID,
+						Name:         activeTool.Name,
+						CompletedAt:  time.Now(),
+						Success:      msg.event.Tool.Error == nil,
+						OutputSample: msg.event.Tool.Result,
+					}
+					m.completedTools = append(m.completedTools, completedTool)
+					
+					// Update duration in tracking
+					duration := time.Since(activeTool.StartTime)
+					m.toolsUsedInLastQuery[activeTool.Name] = duration
+					
+					// Add tool completion message to chat history
+					if msg.event.Tool.Error != nil {
+						// Add error message
+						m.toolErrors = append(m.toolErrors, ToolError{
+							ID:    msg.event.Tool.ID,
+							Name:  activeTool.Name,
+							Error: msg.event.Tool.Error,
+							Time:  time.Now(),
+						})
+						
+						errorMsg := fmt.Sprintf("❌ Tool %s failed: %v", activeTool.Name, msg.event.Tool.Error)
+						m.messages = append(m.messages, BorderedMessage{
+							Role:    "tool_info",
+							Content: errorMsg,
+						})
+					} else {
+						// Add success message with duration
+						successMsg := fmt.Sprintf("✅ Tool %s completed in %v", activeTool.Name, duration.Round(time.Millisecond))
+						m.messages = append(m.messages, BorderedMessage{
+							Role:    "tool_info",
+							Content: successMsg,
+						})
+					}
+				}
+			}
+		}
+		
+		// Continue listening for more events
+		return m, m.listenForToolEvents()
+		
 	case borderedResponseMsg:
 		m.isThinking = false
+		m.showingTools = false
+		
+		// Reset for next query
+		m.toolsUsedInLastQuery = make(map[string]time.Duration)
+		m.activeTools = make(map[string]*ActiveTool)
+		m.completedTools = []CompletedTool{}
 		
 		// Handle special command cases
 		if msg.isQuit {
@@ -445,6 +638,11 @@ func (m BorderedTUI) View() string {
 			// Render with emoji prefix and wrapped text
 			content := messageStyle.Render(fmt.Sprintf("❌ %s", msg.Content))
 			b.WriteString(content + "\n")
+		case "tool_info":
+			// Tool usage information - style differently
+			toolInfoStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
+			content := toolInfoStyle.Render(msg.Content)
+			b.WriteString(content + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -477,9 +675,19 @@ func (m *BorderedTUI) sendMessage(input string) tea.Cmd {
 			return m.handleCommand(input)
 		}
 		
-		// Query the agent
+		// Query the agent with event channel in context
 		ctx := context.Background()
+		if m.toolEventChan != nil {
+			ctx = context.WithValue(ctx, "toolEventChan", m.toolEventChan)
+		}
+		
 		response, err := m.agent.Query(ctx, input)
+		
+		// Close the event channel after query completes
+		if m.toolEventChan != nil {
+			close(m.toolEventChan)
+		}
+		
 		if err != nil {
 			return borderedResponseMsg{err: err}
 		}
@@ -580,6 +788,11 @@ type modelSelectedMsg struct {
 	model    string
 }
 
+// toolEventMsg carries tool execution events
+type toolEventMsg struct {
+	event agent.StreamEvent
+}
+
 
 // adjustTextareaHeight dynamically adjusts the textarea height based on content
 func (m *BorderedTUI) adjustTextareaHeight() {
@@ -617,4 +830,35 @@ func (m *BorderedTUI) adjustTextareaHeight() {
 	}
 	
 	m.textarea.SetHeight(lines)
+}
+
+// formatArguments formats tool arguments for display
+func (m *BorderedTUI) formatArguments(args map[string]interface{}) string {
+	if len(args) == 0 {
+		return ""
+	}
+	
+	var parts []string
+	for k, v := range args {
+		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	}
+	
+	return fmt.Sprintf("(%s)", strings.Join(parts, ", "))
+}
+
+// listenForToolEvents creates a command that listens for tool events
+func (m *BorderedTUI) listenForToolEvents() tea.Cmd {
+	return func() tea.Msg {
+		if m.toolEventChan == nil {
+			return nil
+		}
+		
+		event, ok := <-m.toolEventChan
+		if !ok {
+			// Channel closed
+			return nil
+		}
+		
+		return toolEventMsg{event: event}
+	}
 }
