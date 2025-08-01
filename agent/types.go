@@ -67,19 +67,27 @@ type StreamEvent struct {
 type EventType string
 
 const (
-	EventTypeMessage    EventType = "message"
-	EventTypeToolStart  EventType = "tool_start"
-	EventTypeToolResult EventType = "tool_result"
-	EventTypeError      EventType = "error"
-	EventTypeComplete   EventType = "complete"
+	EventTypeMessage      EventType = "message"
+	EventTypeToolStart    EventType = "tool_start"
+	EventTypeToolProgress EventType = "tool_progress"
+	EventTypeToolResult   EventType = "tool_result"
+	EventTypeToolTimeout  EventType = "tool_timeout"
+	EventTypeToolCancel   EventType = "tool_cancel"
+	EventTypeThinking     EventType = "thinking"       // LLM is reasoning
+	EventTypeError        EventType = "error"
+	EventTypeComplete     EventType = "complete"
 )
 
 // ToolEvent contains information about a tool execution
 type ToolEvent struct {
-	Name   string
-	Args   string
-	Result string
-	Error  error
+	ID       string                 // Unique tool execution ID
+	Name     string                 // Tool name
+	Args     map[string]interface{} // Parsed arguments
+	ArgsRaw  string                 // Raw JSON string
+	Result   string                 // Execution result
+	Error    error                  // Execution error
+	Progress float64                // Progress percentage (0-1)
+	Message  string                 // Progress message
 }
 
 // ProgressEvent represents agent progress events

@@ -41,4 +41,10 @@ func RegisterAll() {
 	registry.Register("google_search", func() tools.Tool {
 		return tools.NewGoogleSearchTool()
 	})
+	
+	// Demo tool for testing
+	// Temporarily disabled due to schema issues
+	// registry.Register("demo_tool", func() tools.Tool {
+	// 	return tools.NewDemoTool()
+	// })
 }

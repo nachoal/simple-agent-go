@@ -357,7 +357,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		fmt.Println("===================\n")
+		fmt.Println("===================")
 	}
 	
 	// Create and run TUI (bordered version with providers and history)
@@ -420,7 +420,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 				}
 			}
 		}
-		fmt.Println("===================\n")
+		fmt.Println("===================")
 	}
 	
 	// Execute query

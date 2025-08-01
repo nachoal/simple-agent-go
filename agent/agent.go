@@ -10,12 +10,21 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools"
 	"github.com/nachoal/simple-agent-go/tools/registry"
 )
+
+// Tool ID generation
+var toolIDCounter uint64
+
+func generateToolID() string {
+	id := atomic.AddUint64(&toolIDCounter, 1)
+	return fmt.Sprintf("tool-%d-%d", time.Now().UnixNano(), id)
+}
 
 // agent is the main agent implementation
 type agent struct {
@@ -72,6 +81,12 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 		Role:    llm.RoleUser,
 		Content: llm.StringPtr(query),
 	})
+
+	// Extract stream channel (if any) once
+	var streamChan chan<- StreamEvent
+	if ch, ok := ctx.Value("toolEventChan").(chan StreamEvent); ok {
+		streamChan = ch // nil if UI isn't streaming
+	}
 
 	// Get available tools if configured
 	var availableTools []map[string]interface{}
@@ -199,8 +214,8 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 				})
 			}
 
-			// Execute tool calls concurrently
-			results := a.toolRegistry.ExecuteToolCalls(ctx, toolCalls)
+			// Execute tool calls with events if channel provided
+			results := a.executeToolsWithEvents(ctx, toolCalls, streamChan)
 			allToolResults = append(allToolResults, results...)
 
 			// Add tool results to memory
@@ -355,12 +370,19 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 						Arguments: tc.Function.Arguments,
 					}
 
+					// Parse arguments for display
+					var args map[string]interface{}
+					if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+						args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
+					}
+					
 					// Send tool start event
 					events <- StreamEvent{
 						Type: EventTypeToolStart,
 						Tool: &ToolEvent{
-							Name: tc.Function.Name,
-							Args: string(tc.Function.Arguments),
+							Name:    tc.Function.Name,
+							Args:    args,
+							ArgsRaw: string(tc.Function.Arguments),
 						},
 					}
 				}
@@ -379,6 +401,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 					events <- StreamEvent{
 						Type: EventTypeToolResult,
 						Tool: &ToolEvent{
+							ID:     result.ID,
 							Name:   result.Name,
 							Result: content,
 							Error:  result.Error,
@@ -726,4 +749,92 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 	}
 	
 	return toolCalls
+}
+
+// executeToolsWithEvents executes tools and emits events without streaming
+func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCall, eventChan chan<- StreamEvent) []tools.ToolResult {
+	results := make([]tools.ToolResult, len(calls))
+	var wg sync.WaitGroup
+
+	for i, call := range calls {
+		wg.Add(1)
+		go func(idx int, tc tools.ToolCall) {
+			defer wg.Done()
+			
+			// Generate unique ID if not present
+			if tc.ID == "" {
+				tc.ID = generateToolID()
+			}
+			
+			// Parse arguments for display
+			var args map[string]interface{}
+			if err := json.Unmarshal(tc.Arguments, &args); err != nil {
+				args = map[string]interface{}{"raw": string(tc.Arguments)}
+			}
+			
+			// Print to stderr in query mode (no event channel)
+			if eventChan == nil {
+				fmt.Fprintf(os.Stderr, "🔧 Calling tool: %s\n", tc.Name)
+			}
+			
+			// Emit tool start event if channel provided
+			if eventChan != nil {
+				if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+					fmt.Fprintf(os.Stderr, "[Agent] Sending tool start event for %s (ID: %s)\n", tc.Name, tc.ID)
+				}
+				select {
+				case eventChan <- StreamEvent{
+					Type: EventTypeToolStart,
+					Tool: &ToolEvent{
+						ID:      tc.ID,
+						Name:    tc.Name,
+						Args:    args,
+						ArgsRaw: string(tc.Arguments),
+					},
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			
+			// Execute the tool
+			startTime := time.Now()
+			result := a.toolRegistry.ExecuteToolCall(ctx, tc)
+			duration := time.Since(startTime)
+			results[idx] = result
+			
+			// Print completion in query mode
+			if eventChan == nil {
+				fmt.Fprintf(os.Stderr, "🔧 %s completed in %v\n", tc.Name, duration)
+			}
+			
+			// Emit tool result event if channel provided
+			if eventChan != nil {
+				eventType := EventTypeToolResult
+				if result.Error != nil {
+					// Could distinguish between timeout/cancel/error here
+					eventType = EventTypeToolResult
+				}
+				
+				select {
+				case eventChan <- StreamEvent{
+					Type: eventType,
+					Tool: &ToolEvent{
+						ID:      tc.ID,
+						Name:    tc.Name,
+						Args:    args,
+						ArgsRaw: string(tc.Arguments),
+						Result:  result.Result,
+						Error:   result.Error,
+					},
+				}:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}(i, call)
+	}
+
+	wg.Wait()
+	return results
 }
