@@ -360,6 +360,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Println("===================")
 	}
 	
+	// Print header before starting TUI
+	tui.PrintHeader(provider, model)
+	
 	// Create and run TUI (bordered version with providers and history)
 	p := tea.NewProgram(
 		tui.NewBorderedTUIWithHistory(llmClient, historyAgent, provider, model, providers, configManager),
