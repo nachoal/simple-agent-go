@@ -153,10 +153,60 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Check if this is a GPT-OSS model with Harmony format
+	if len(response.Choices) > 0 && response.Choices[0].Message.Content != nil {
+		content := *response.Choices[0].Message.Content
+		
+		// Detect GPT-OSS model and Harmony format
+		isGPTOSS := strings.Contains(strings.ToLower(request.Model), "gpt-oss") || 
+		            strings.Contains(strings.ToLower(request.Model), "gpt_oss")
+		
+		if isGPTOSS && IsHarmonyFormat(content) {
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[LM Studio] Detected Harmony format in GPT-OSS response\n")
+				fmt.Fprintf(os.Stderr, "[LM Studio] Raw content: %s\n", content)
+			}
+			
+			// Parse Harmony format
+			harmony, err := ParseHarmonyFormat(content)
+			if err == nil {
+				// Replace content with clean final message
+				cleanContent := ConvertToStandardResponse(harmony)
+				// Only set content if there's actual final content, otherwise set to nil for tool calls
+				if cleanContent != "" || len(harmony.ToolCalls) == 0 {
+					response.Choices[0].Message.Content = &cleanContent
+				} else {
+					// Set content to nil when there are only tool calls (no final message)
+					response.Choices[0].Message.Content = nil
+				}
+				
+				// Add tool calls if present
+				if len(harmony.ToolCalls) > 0 {
+					response.Choices[0].Message.ToolCalls = harmony.ToolCalls
+					
+					if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+						fmt.Fprintf(os.Stderr, "[LM Studio] Extracted %d tool calls from Harmony format\n", len(harmony.ToolCalls))
+						for i, tc := range harmony.ToolCalls {
+							fmt.Fprintf(os.Stderr, "[LM Studio] Tool Call %d: %s with args: %s\n", 
+								i, tc.Function.Name, string(tc.Function.Arguments))
+						}
+					}
+				}
+				
+				// Store analysis/reasoning if needed (could be added to a custom field later)
+				if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && harmony.Analysis != "" {
+					fmt.Fprintf(os.Stderr, "[LM Studio] Analysis channel: %s\n", harmony.Analysis)
+				}
+			} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[LM Studio] Failed to parse Harmony format: %v\n", err)
+			}
+		}
+	}
+
 	// Debug log parsed response
 	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 		if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
-			fmt.Fprintf(os.Stderr, "[LM Studio] Parsed %d tool calls\n", len(response.Choices[0].Message.ToolCalls))
+			fmt.Fprintf(os.Stderr, "[LM Studio] Final parsed %d tool calls\n", len(response.Choices[0].Message.ToolCalls))
 			for i, tc := range response.Choices[0].Message.ToolCalls {
 				fmt.Fprintf(os.Stderr, "[LM Studio] Tool Call %d: %s with args: %s\n", i, tc.Function.Name, string(tc.Function.Arguments))
 			}

@@ -19,6 +19,7 @@ import (
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
 	"github.com/nachoal/simple-agent-go/llm/groq"
+	"github.com/nachoal/simple-agent-go/llm/llamacpp"
 	"github.com/nachoal/simple-agent-go/llm/lmstudio"
 	"github.com/nachoal/simple-agent-go/llm/moonshot"
 	"github.com/nachoal/simple-agent-go/llm/ollama"
@@ -158,7 +159,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	
 	// Create all provider clients for model selection
 	providers := make(map[string]llm.Client)
-	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
+	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama", "llamacpp"}
 	
 	// Debug: count successful providers
 	successCount := 0
@@ -185,10 +186,14 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	
 	// Create agent
-	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
-		agent.WithTemperature(0.7),
-	)
+	var agentOpts []agent.Option
+	agentOpts = append(agentOpts, agent.WithMaxIterations(10))
+	agentOpts = append(agentOpts, agent.WithTemperature(0.7))
+	
+	// GPT-OSS models now supported with Harmony parser
+	// Tools are enabled automatically via the Harmony format parser in lmstudio/harmony.go
+	
+	agentInstance := agent.New(llmClient, agentOpts...)
 	
 	// Initialize history manager
 	historyMgr, err := history.NewManager()
@@ -228,10 +233,12 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return fmt.Errorf("failed to create %s client: %w", provider, err)
 				}
-				agentInstance = agent.New(llmClient,
-					agent.WithMaxIterations(10),
-					agent.WithTemperature(0.7),
-				)
+				// Recreate agent with proper options
+				var opts []agent.Option
+				opts = append(opts, agent.WithMaxIterations(10))
+				opts = append(opts, agent.WithTemperature(0.7))
+				// GPT-OSS models now supported with Harmony parser
+				agentInstance = agent.New(llmClient, opts...)
 			}
 		}
 	} else if resumeSet {
@@ -314,10 +321,12 @@ func runTUI(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create %s client: %w", provider, err)
 			}
-			agentInstance = agent.New(llmClient,
-				agent.WithMaxIterations(10),
-				agent.WithTemperature(0.7),
-			)
+			// Recreate agent with proper options
+			var opts []agent.Option
+			opts = append(opts, agent.WithMaxIterations(10))
+			opts = append(opts, agent.WithTemperature(0.7))
+			// GPT-OSS models now supported with Harmony parser
+			agentInstance = agent.New(llmClient, opts...)
 		}
 	} else {
 		// Start new session
@@ -399,10 +408,14 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	defer llmClient.Close()
 	
 	// Create agent
-	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
-		agent.WithTemperature(0.7),
-	)
+	var agentOpts []agent.Option
+	agentOpts = append(agentOpts, agent.WithMaxIterations(10))
+	agentOpts = append(agentOpts, agent.WithTemperature(0.7))
+	
+	// GPT-OSS models now supported with Harmony parser
+	// Tools are enabled automatically via the Harmony format parser in lmstudio/harmony.go
+	
+	agentInstance := agent.New(llmClient, agentOpts...)
 	
 	// If verbose, show the enhanced system prompt (including tools)
 	if verbose {
@@ -507,6 +520,9 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 	case "ollama":
 		return ollama.NewClient(llm.WithModel(model))
 		
+	case "llamacpp", "llama.cpp", "llama-cpp":
+		return llamacpp.NewClient(llm.WithModel(model))
+		
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -522,6 +538,7 @@ func getDefaultModel(provider string) string {
 		"groq":       "mixtral-8x7b-32768",
 		"lmstudio":   "local-model",
 		"ollama":     "llama2",
+		"llamacpp":   "gpt-oss-120b",
 	}
 	
 	if model, ok := defaults[strings.ToLower(provider)]; ok {
