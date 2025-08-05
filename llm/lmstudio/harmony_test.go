@@ -29,7 +29,7 @@ func TestParseHarmonyFormat(t *testing.T) {
 			wantFinal: "",
 			wantAnalysis: "We need to perform Wikipedia search. Let's call wikipedia first.",
 			wantToolName: "wikipedia",
-			wantToolArgs: `{"input":"Tunguska incident"}`,
+			wantToolArgs: `{"input":"{\"input\":\"Tunguska incident\"}"}`, // Now wrapped
 		},
 		{
 			name: "Google search tool call",
@@ -37,7 +37,7 @@ func TestParseHarmonyFormat(t *testing.T) {
 			wantFinal: "",
 			wantAnalysis: "",
 			wantToolName: "google_search",
-			wantToolArgs: `{"query":"latest AI news"}`,
+			wantToolArgs: `{"input":"{\"query\":\"latest AI news\"}"}`, // Now wrapped
 		},
 		{
 			name: "Multiple channels",
@@ -233,14 +233,50 @@ Let's call wikipedia first.<|end|><|start|>assistant<|channel|>commentary to=fun
 		t.Errorf("Expected wikipedia tool, got %q", result.ToolCalls[0].Function.Name)
 	}
 	
-	// Check the arguments
+	// Check the arguments - now should be wrapped in "input" field
 	var args map[string]interface{}
 	err = json.Unmarshal(result.ToolCalls[0].Function.Arguments, &args)
 	if err != nil {
 		t.Fatalf("Failed to unmarshal tool arguments: %v", err)
 	}
 	
-	if args["input"] != "Tunguska incident" {
-		t.Errorf("Expected input 'Tunguska incident', got %q", args["input"])
+	// The arguments should now be wrapped: {"input": "{\"input\":\"Tunguska incident\"}"}
+	if inputStr, ok := args["input"].(string); !ok {
+		t.Errorf("Expected 'input' field to be a string, got %T", args["input"])
+	} else if inputStr != `{"input":"Tunguska incident"}` {
+		t.Errorf("Expected input JSON string '{\"input\":\"Tunguska incident\"}', got %q", inputStr)
+	}
+}
+
+func TestFileWriteToolWrapper(t *testing.T) {
+	// Test file_write tool gets properly wrapped
+	input := `<|channel|>commentary to=functions.file_write <|constrain|>json<|message|>{"path":"test.txt","content":"hello world"}`
+	
+	result, err := ParseHarmonyFormat(input)
+	if err != nil {
+		t.Fatalf("Failed to parse file_write example: %v", err)
+	}
+	
+	// Check that we have a tool call
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("Expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	
+	if result.ToolCalls[0].Function.Name != "file_write" {
+		t.Errorf("Expected file_write tool, got %q", result.ToolCalls[0].Function.Name)
+	}
+	
+	// Check the arguments are wrapped in "input" field
+	var args map[string]interface{}
+	err = json.Unmarshal(result.ToolCalls[0].Function.Arguments, &args)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal tool arguments: %v", err)
+	}
+	
+	// The arguments should be wrapped: {"input": "{\"path\":\"test.txt\",\"content\":\"hello world\"}"}
+	if inputStr, ok := args["input"].(string); !ok {
+		t.Errorf("Expected 'input' field to be a string, got %T", args["input"])
+	} else if inputStr != `{"path":"test.txt","content":"hello world"}` {
+		t.Errorf("Expected wrapped JSON string, got %q", inputStr)
 	}
 }

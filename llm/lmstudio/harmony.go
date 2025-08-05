@@ -54,20 +54,43 @@ func ParseHarmonyFormat(content string) (*HarmonyResponse, error) {
 				}
 				
 				// Convert the arguments to the expected format
-				// GPT-OSS might send {"input": "value"} or other formats
+				// GPT-OSS sends {"path": "...", "content": "..."} directly
+				// But our tools expect {"input": "{\"path\": \"...\", \"content\": \"...\"}"}
 				if argsJSON != "" {
-					// Try to parse and re-encode to ensure valid JSON
-					var parsedArgs map[string]interface{}
-					if err := json.Unmarshal([]byte(argsJSON), &parsedArgs); err == nil {
-						if reencoded, err := json.Marshal(parsedArgs); err == nil {
-							toolCall.Function.Arguments = json.RawMessage(reencoded)
+					// For file tools and other tools expecting "input" parameter,
+					// we need to wrap the JSON in an input field
+					// All simple-agent tools expect "input" parameter with JSON string
+					needsInputWrapper := toolName == "file_write" || toolName == "file_read" || 
+										toolName == "file_edit" || toolName == "directory_list" ||
+										toolName == "shell" || toolName == "calculate" ||
+										toolName == "wikipedia" || toolName == "google_search"
+					
+					if needsInputWrapper {
+						// Wrap the arguments as a JSON string in an "input" field
+						wrappedArgs := map[string]interface{}{
+							"input": argsJSON,
+						}
+						if wrapped, err := json.Marshal(wrappedArgs); err == nil {
+							toolCall.Function.Arguments = json.RawMessage(wrapped)
 						} else {
-							// If re-encoding fails, use the original
+							// Fallback to original if wrapping fails
 							toolCall.Function.Arguments = json.RawMessage(argsJSON)
 						}
 					} else {
-						// If parsing fails, try to use as-is (might be valid JSON we can't parse)
-						toolCall.Function.Arguments = json.RawMessage(argsJSON)
+						// For other tools, use the arguments directly
+						// Try to parse and re-encode to ensure valid JSON
+						var parsedArgs map[string]interface{}
+						if err := json.Unmarshal([]byte(argsJSON), &parsedArgs); err == nil {
+							if reencoded, err := json.Marshal(parsedArgs); err == nil {
+								toolCall.Function.Arguments = json.RawMessage(reencoded)
+							} else {
+								// If re-encoding fails, use the original
+								toolCall.Function.Arguments = json.RawMessage(argsJSON)
+							}
+						} else {
+							// If parsing fails, try to use as-is (might be valid JSON we can't parse)
+							toolCall.Function.Arguments = json.RawMessage(argsJSON)
+						}
 					}
 				}
 				

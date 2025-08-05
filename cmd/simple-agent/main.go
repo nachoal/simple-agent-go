@@ -19,7 +19,6 @@ import (
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
 	"github.com/nachoal/simple-agent-go/llm/groq"
-	"github.com/nachoal/simple-agent-go/llm/llamacpp"
 	"github.com/nachoal/simple-agent-go/llm/lmstudio"
 	"github.com/nachoal/simple-agent-go/llm/moonshot"
 	"github.com/nachoal/simple-agent-go/llm/ollama"
@@ -159,7 +158,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	
 	// Create all provider clients for model selection
 	providers := make(map[string]llm.Client)
-	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama", "llamacpp"}
+	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
 	
 	// Debug: count successful providers
 	successCount := 0
@@ -520,9 +519,6 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 	case "ollama":
 		return ollama.NewClient(llm.WithModel(model))
 		
-	case "llamacpp", "llama.cpp", "llama-cpp":
-		return llamacpp.NewClient(llm.WithModel(model))
-		
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
 	}
@@ -538,7 +534,6 @@ func getDefaultModel(provider string) string {
 		"groq":       "mixtral-8x7b-32768",
 		"lmstudio":   "local-model",
 		"ollama":     "llama2",
-		"llamacpp":   "gpt-oss-120b",
 	}
 	
 	if model, ok := defaults[strings.ToLower(provider)]; ok {
