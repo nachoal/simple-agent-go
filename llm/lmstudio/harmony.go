@@ -35,7 +35,11 @@ func ParseHarmonyFormat(content string) (*HarmonyResponse, error) {
 	}
 	
 	// Extract commentary channel (tool calls)
-	// Format: <|channel|>commentary to=functions.tool_name <|constrain|>json<|message|>{"args": "value"}
+	// Two formats:
+	// 1. Old format: <|channel|>commentary to=functions.tool_name <|constrain|>json<|message|>{"args": "value"}
+	// 2. New format: <|channel|>commentary<|message|>{"name": "tool_name", "arguments": {...}}
+	
+	// Try old format first
 	commentaryRe := regexp.MustCompile(`(?s)<\|channel\|>commentary\s+to=functions\.(\w+).*?<\|message\|>(.*?)(?:<\|call\|>|<\|end\|>|$)`)
 	if matches := commentaryRe.FindAllStringSubmatch(content, -1); len(matches) > 0 {
 		for _, match := range matches {
@@ -95,6 +99,62 @@ func ParseHarmonyFormat(content string) (*HarmonyResponse, error) {
 				}
 				
 				response.ToolCalls = append(response.ToolCalls, toolCall)
+			}
+		}
+	} else {
+		// Try new format: <|channel|>commentary<|message|>{"name": "tool_name", "arguments": {...}}
+		newCommentaryRe := regexp.MustCompile(`(?s)<\|channel\|>commentary(?:\s+[^<]*)?<\|message\|>(.*?)(?:<\|call\|>|<\|end\|>|$)`)
+		if matches := newCommentaryRe.FindAllStringSubmatch(content, -1); len(matches) > 0 {
+			for _, match := range matches {
+				if len(match) > 1 {
+					jsonContent := strings.TrimSpace(match[1])
+					
+					// Try to parse as {"name": "tool_name", "arguments": {...}}
+					var toolPayload struct {
+						Name      string          `json:"name"`
+						Arguments json.RawMessage `json:"arguments"`
+					}
+					
+					if err := json.Unmarshal([]byte(jsonContent), &toolPayload); err == nil && toolPayload.Name != "" {
+						// Extract the actual arguments
+						var args map[string]interface{}
+						if err := json.Unmarshal(toolPayload.Arguments, &args); err == nil {
+							// Create tool call
+							toolCall := llm.ToolCall{
+								ID:   fmt.Sprintf("harmony_%s_%d", toolPayload.Name, len(response.ToolCalls)),
+								Type: "function",
+								Function: llm.FunctionCall{
+									Name: toolPayload.Name,
+								},
+							}
+							
+							// All simple-agent tools expect "input" parameter with JSON string
+							needsInputWrapper := toolPayload.Name == "file_write" || toolPayload.Name == "file_read" || 
+												toolPayload.Name == "file_edit" || toolPayload.Name == "directory_list" ||
+												toolPayload.Name == "shell" || toolPayload.Name == "calculate" ||
+												toolPayload.Name == "wikipedia" || toolPayload.Name == "google_search"
+							
+							if needsInputWrapper {
+								// Wrap the arguments as a JSON string in an "input" field
+								wrappedArgs := map[string]interface{}{
+									"input": string(toolPayload.Arguments),
+								}
+								if wrapped, err := json.Marshal(wrappedArgs); err == nil {
+									toolCall.Function.Arguments = json.RawMessage(wrapped)
+								} else {
+									// Fallback to original if wrapping fails
+									toolCall.Function.Arguments = toolPayload.Arguments
+								}
+							} else {
+								// For other tools, use the arguments directly
+								toolCall.Function.Arguments = toolPayload.Arguments
+							}
+							
+							response.ToolCalls = append(response.ToolCalls, toolCall)
+							response.Commentary = fmt.Sprintf("Tool: %s, Args: %s", toolPayload.Name, string(toolPayload.Arguments))
+						}
+					}
+				}
 			}
 		}
 	}

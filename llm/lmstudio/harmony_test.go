@@ -280,3 +280,47 @@ func TestFileWriteToolWrapper(t *testing.T) {
 		t.Errorf("Expected wrapped JSON string, got %q", inputStr)
 	}
 }
+
+func TestNewCommentaryFormat(t *testing.T) {
+	// Test new format where tool name is in JSON payload
+	input := `<|channel|>commentary<|message|>{"name": "file_write", "arguments": {"path":"story.md","content":"# A Story\n\nOnce upon a time..."}}`
+	
+	result, err := ParseHarmonyFormat(input)
+	if err != nil {
+		t.Fatalf("Failed to parse new commentary format: %v", err)
+	}
+	
+	// Check that we have a tool call
+	if len(result.ToolCalls) != 1 {
+		t.Fatalf("Expected 1 tool call, got %d", len(result.ToolCalls))
+	}
+	
+	if result.ToolCalls[0].Function.Name != "file_write" {
+		t.Errorf("Expected file_write tool, got %q", result.ToolCalls[0].Function.Name)
+	}
+	
+	// Check the arguments are wrapped in "input" field
+	var args map[string]interface{}
+	err = json.Unmarshal(result.ToolCalls[0].Function.Arguments, &args)
+	if err != nil {
+		t.Fatalf("Failed to unmarshal tool arguments: %v", err)
+	}
+	
+	// The arguments should be wrapped: {"input": "{\"path\":\"story.md\",\"content\":\"# A Story\\n\\nOnce upon a time...\"}"}
+	if inputStr, ok := args["input"].(string); !ok {
+		t.Errorf("Expected 'input' field to be a string, got %T", args["input"])
+	} else {
+		// Parse the inner JSON to verify
+		var innerArgs map[string]interface{}
+		if err := json.Unmarshal([]byte(inputStr), &innerArgs); err != nil {
+			t.Errorf("Failed to parse inner arguments: %v", err)
+		} else {
+			if innerArgs["path"] != "story.md" {
+				t.Errorf("Expected path 'story.md', got %q", innerArgs["path"])
+			}
+			if !strings.Contains(innerArgs["content"].(string), "Once upon a time") {
+				t.Errorf("Expected content to contain 'Once upon a time'")
+			}
+		}
+	}
+}
