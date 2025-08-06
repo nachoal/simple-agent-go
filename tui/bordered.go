@@ -312,7 +312,7 @@ func PrintHeader(provider, model string) {
 	toolCount := len(registry.List())
 	header2 := fmt.Sprintf("%s | %s",
 		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
-		cmdStyle.Render("Commands: /help, /tools, /model, /system, /verbose, /clear, /exit"))
+		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /verbose, /clear, /exit"))
 	
 	fmt.Println(header1)
 	fmt.Println(header2)
@@ -666,6 +666,37 @@ func (m BorderedTUI) View() string {
 		b.WriteString("\n")
 	}
 	
+	// Create model info string that will appear above the input box
+	// Use gray for labels and blue for the actual model/provider names
+	grayStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))  // Same blue as header
+	
+	modelInfo := fmt.Sprintf("%s %s %s %s",
+		grayStyle.Render("Model:"),
+		blueStyle.Render(m.model),
+		grayStyle.Render("| Provider:"),
+		blueStyle.Render(m.provider))
+	
+	// Calculate the right alignment padding
+	// The border box width is m.width - 2, so we align to that
+	boxWidth := m.width - 2
+	if boxWidth < 40 {
+		boxWidth = 40 // Minimum width
+	}
+	
+	// Calculate the actual width of the rendered text (without ANSI codes)
+	plainTextWidth := len("Model: ") + len(m.model) + len(" | Provider: ") + len(m.provider)
+	
+	// Right-align the model info to match the box width
+	paddingNeeded := boxWidth - plainTextWidth
+	if paddingNeeded > 0 {
+		modelInfo = strings.Repeat(" ", paddingNeeded) + modelInfo
+	}
+	
+	// Add the model info line above the input box
+	b.WriteString(modelInfo)
+	b.WriteString("\n")
+	
 	// Input area with border and prompt
 	inputContent := m.textarea.View()
 	// Add the prompt prefix
@@ -723,6 +754,7 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
   /help    - Show this help
   /tools   - List available tools
   /model   - Change model interactively
+  /status  - Show current model and provider
   /system  - Show system prompt
   /verbose - Toggle verbose/debug mode
   /clear   - Clear chat history
@@ -757,6 +789,10 @@ Keyboard shortcuts:
 		
 		// Return a special message that will trigger model selection
 		return borderedResponseMsg{content: "", isModelSelect: true}
+	case "/status":
+		// Show current model and provider status
+		statusMsg := fmt.Sprintf("📊 Current Configuration:\n  Provider: %s\n  Model: %s", m.provider, m.model)
+		return borderedResponseMsg{content: statusMsg, isCommand: true}
 	case "/system":
 		// Show the current system prompt with tools
 		messages := m.agent.GetMemory()
