@@ -63,19 +63,11 @@ func NewCalculateTool() Tool {
 
 // NewShellTool creates a new shell tool
 func NewShellTool() Tool {
-	// Default allowed commands for safety
-	allowedCommands := []string{
-		"ls", "cat", "grep", "find", "echo", "pwd", "date",
-		"wc", "sort", "head", "tail", "awk", "sed", "cut",
-		"diff", "file", "which", "env", "printenv",
-	}
-	
 	return &ShellTool{
 		BaseTool: base.BaseTool{
 			ToolName: "shell",
-			ToolDesc: "Execute shell commands safely with timeout and output capture",
+			ToolDesc: "Execute shell commands with timeout and output capture",
 		},
-		allowedCommands: allowedCommands,
 	}
 }
 

@@ -22,7 +22,6 @@ type ShellParams = base.GenericParams
 // ShellTool executes shell commands
 type ShellTool struct {
 	base.BaseTool
-	allowedCommands []string
 }
 
 
@@ -78,14 +77,8 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 		timeout = 30
 	}
 
-	// Check if command is allowed (basic safety check)
-	// In production, implement more sophisticated sandboxing
-	baseCmd := strings.Fields(command)[0]
-	if !t.isCommandAllowed(baseCmd) {
-		return "", NewToolError("COMMAND_NOT_ALLOWED", "Command is not in the allowed list").
-			WithDetail("command", baseCmd).
-			WithDetail("allowed", strings.Join(t.allowedCommands, ", "))
-	}
+	// Note: Command is executed without restrictions
+	// In production environments, consider implementing sandboxing or containers for safety
 
 	// Create context with timeout
 	cmdCtx, cancel := context.WithTimeout(ctx, time.Duration(timeout)*time.Second)
@@ -167,18 +160,4 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 	return result, nil
 }
 
-func (t *ShellTool) isCommandAllowed(cmd string) bool {
-	// Remove any path components
-	baseCmd := strings.TrimPrefix(cmd, "/")
-	if idx := strings.LastIndex(baseCmd, "/"); idx >= 0 {
-		baseCmd = baseCmd[idx+1:]
-	}
-
-	for _, allowed := range t.allowedCommands {
-		if baseCmd == allowed {
-			return true
-		}
-	}
-	return false
-}
 
