@@ -26,31 +26,42 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// OllamaToolCall represents a tool call in Ollama's format
+type OllamaToolCall struct {
+	Function struct {
+		Name      string                 `json:"name"`
+		Arguments map[string]interface{} `json:"arguments"`
+	} `json:"function"`
+}
+
 // OllamaMessage represents a message in Ollama's format
 type OllamaMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
+	Role       string           `json:"role"`
+	Content    string           `json:"content"`
+	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
 }
 
 // OllamaRequest represents a request to Ollama's API
 type OllamaRequest struct {
-	Model    string          `json:"model"`
-	Messages []OllamaMessage `json:"messages"`
-	Stream   bool            `json:"stream"`
-	Options  map[string]interface{} `json:"options,omitempty"`
+	Model      string                   `json:"model"`
+	Messages   []OllamaMessage          `json:"messages"`
+	Stream     bool                     `json:"stream"`
+	Tools      []map[string]interface{} `json:"tools,omitempty"`
+	ToolChoice interface{}              `json:"tool_choice,omitempty"`
+	Options    map[string]interface{}   `json:"options,omitempty"`
 }
 
 // OllamaResponse represents a response from Ollama's API
 type OllamaResponse struct {
-	Model     string         `json:"model"`
-	CreatedAt time.Time      `json:"created_at"`
-	Message   OllamaMessage  `json:"message"`
-	Done      bool           `json:"done"`
-	TotalDuration   int64    `json:"total_duration,omitempty"`
-	LoadDuration    int64    `json:"load_duration,omitempty"`
-	PromptEvalCount int      `json:"prompt_eval_count,omitempty"`
-	EvalCount       int      `json:"eval_count,omitempty"`
-	EvalDuration    int64    `json:"eval_duration,omitempty"`
+	Model           string         `json:"model"`
+	CreatedAt       time.Time      `json:"created_at"`
+	Message         OllamaMessage  `json:"message"`
+	Done            bool           `json:"done"`
+	TotalDuration   int64          `json:"total_duration,omitempty"`
+	LoadDuration    int64          `json:"load_duration,omitempty"`
+	PromptEvalCount int            `json:"prompt_eval_count,omitempty"`
+	EvalCount       int            `json:"eval_count,omitempty"`
+	EvalDuration    int64          `json:"eval_duration,omitempty"`
 }
 
 // OllamaStreamResponse for streaming
@@ -224,6 +235,30 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 			}
 
 			// Convert to standard stream event
+			delta := &llm.Message{
+				Content: llm.StringPtr(streamResp.Message.Content),
+			}
+			
+			// Convert tool calls if present
+			if len(streamResp.Message.ToolCalls) > 0 {
+				for _, tc := range streamResp.Message.ToolCalls {
+					// Convert arguments to JSON
+					args, err := json.Marshal(tc.Function.Arguments)
+					if err != nil {
+						args = []byte("{}")
+					}
+					
+					delta.ToolCalls = append(delta.ToolCalls, llm.ToolCall{
+						ID:   fmt.Sprintf("call_%d", time.Now().UnixNano()),
+						Type: "function",
+						Function: llm.FunctionCall{
+							Name:      tc.Function.Name,
+							Arguments: args,
+						},
+					})
+				}
+			}
+			
 			event := llm.StreamEvent{
 				ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
 				Object:  "chat.completion.chunk",
@@ -232,16 +267,18 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 				Choices: []llm.Choice{
 					{
 						Index: 0,
-						Delta: &llm.Message{
-							Content: llm.StringPtr(streamResp.Message.Content),
-						},
+						Delta: delta,
 					},
 				},
 			}
 
 			// Set finish reason if done
 			if streamResp.Done {
-				event.Choices[0].FinishReason = "stop"
+				if len(delta.ToolCalls) > 0 {
+					event.Choices[0].FinishReason = "tool_calls"
+				} else {
+					event.Choices[0].FinishReason = "stop"
+				}
 			}
 
 			select {
@@ -342,9 +379,11 @@ func (c *Client) setHeaders(req *http.Request) {
 // convertRequest converts from standard format to Ollama format
 func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 	ollamaReq := &OllamaRequest{
-		Model:  req.Model,
-		Stream: req.Stream,
-		Options: make(map[string]interface{}),
+		Model:      req.Model,
+		Stream:     req.Stream,
+		Tools:      req.Tools,
+		ToolChoice: req.ToolChoice,
+		Options:    make(map[string]interface{}),
 	}
 
 	if ollamaReq.Model == "" {
@@ -354,16 +393,36 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 	// Convert messages
 	for _, msg := range req.Messages {
 		role := string(msg.Role)
-		// Ollama uses "system", "user", "assistant"
-		if msg.Role == llm.RoleTool {
-			// Combine tool responses into user messages
-			role = "user"
-		}
-
-		ollamaReq.Messages = append(ollamaReq.Messages, OllamaMessage{
+		// Ollama uses "system", "user", "assistant", "tool"
+		
+		ollamaMsg := OllamaMessage{
 			Role:    role,
 			Content: llm.GetStringValue(msg.Content),
-		})
+		}
+		
+		// Convert tool calls if present
+		if len(msg.ToolCalls) > 0 {
+			for _, tc := range msg.ToolCalls {
+				// Parse arguments as map
+				var args map[string]interface{}
+				if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
+					// If unmarshal fails, use raw string
+					args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
+				}
+				
+				ollamaMsg.ToolCalls = append(ollamaMsg.ToolCalls, OllamaToolCall{
+					Function: struct {
+						Name      string                 `json:"name"`
+						Arguments map[string]interface{} `json:"arguments"`
+					}{
+						Name:      tc.Function.Name,
+						Arguments: args,
+					},
+				})
+			}
+		}
+
+		ollamaReq.Messages = append(ollamaReq.Messages, ollamaMsg)
 	}
 
 	// Convert parameters to Ollama options
@@ -382,6 +441,37 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 
 // convertResponse converts from Ollama format to standard format
 func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatResponse {
+	message := llm.Message{
+		Role:    llm.RoleAssistant,
+		Content: llm.StringPtr(resp.Message.Content),
+	}
+	
+	// Convert tool calls if present
+	if len(resp.Message.ToolCalls) > 0 {
+		for _, tc := range resp.Message.ToolCalls {
+			// Convert arguments to JSON
+			args, err := json.Marshal(tc.Function.Arguments)
+			if err != nil {
+				args = []byte("{}")
+			}
+			
+			message.ToolCalls = append(message.ToolCalls, llm.ToolCall{
+				ID:   fmt.Sprintf("call_%d", time.Now().UnixNano()),
+				Type: "function",
+				Function: llm.FunctionCall{
+					Name:      tc.Function.Name,
+					Arguments: args,
+				},
+			})
+		}
+	}
+	
+	// Determine finish reason
+	finishReason := "stop"
+	if len(message.ToolCalls) > 0 {
+		finishReason = "tool_calls"
+	}
+	
 	return &llm.ChatResponse{
 		ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -389,12 +479,9 @@ func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatRe
 		Model:   model,
 		Choices: []llm.Choice{
 			{
-				Index: 0,
-				Message: llm.Message{
-					Role:    llm.RoleAssistant,
-					Content: llm.StringPtr(resp.Message.Content),
-				},
-				FinishReason: "stop",
+				Index:        0,
+				Message:      message,
+				FinishReason: finishReason,
 			},
 		},
 		Usage: &llm.Usage{
