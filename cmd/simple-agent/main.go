@@ -30,13 +30,14 @@ import (
 )
 
 var (
-	// Flags
-	provider   string
-	model      string
-	verbose    bool
-	continueConv bool
-	resume     string
-	resumeSet  bool
+    // Flags
+    provider   string
+    model      string
+    verbose    bool
+    continueConv bool
+    resume     string
+    resumeSet  bool
+    customParser string
 	
 	// Root command
 	rootCmd = &cobra.Command{
@@ -82,8 +83,9 @@ func init() {
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	
 	// TUI-specific flags
-	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
-	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session ID or show picker if no ID provided")
+    rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
+    rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session ID or show picker if no ID provided")
+    rootCmd.PersistentFlags().StringVar(&customParser, "custom-parser", "", "Enable custom parsing for provider output (e.g., 'lmstudio')")
 	
 	// Set NoOptDefVal for resume flag - this value is used when -r is provided without an argument
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = "picker"
@@ -185,10 +187,14 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	
 	// Create agent
-	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
-		agent.WithTemperature(0.7),
-	)
+    // Determine custom parsers
+    enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
+
+    agentInstance := agent.New(llmClient,
+        agent.WithMaxIterations(10),
+        agent.WithTemperature(0.7),
+        agent.WithLMStudioParser(enableLMStudioParser),
+    )
 	
 	// Initialize history manager
 	historyMgr, err := history.NewManager()
@@ -228,10 +234,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				if err != nil {
 					return fmt.Errorf("failed to create %s client: %w", provider, err)
 				}
-				agentInstance = agent.New(llmClient,
-					agent.WithMaxIterations(10),
-					agent.WithTemperature(0.7),
-				)
+                agentInstance = agent.New(llmClient,
+                    agent.WithMaxIterations(10),
+                    agent.WithTemperature(0.7),
+                    agent.WithLMStudioParser(enableLMStudioParser),
+                )
 			}
 		}
 	} else if resumeSet {
@@ -314,10 +321,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 			if err != nil {
 				return fmt.Errorf("failed to create %s client: %w", provider, err)
 			}
-			agentInstance = agent.New(llmClient,
-				agent.WithMaxIterations(10),
-				agent.WithTemperature(0.7),
-			)
+                agentInstance = agent.New(llmClient,
+                    agent.WithMaxIterations(10),
+                    agent.WithTemperature(0.7),
+                    agent.WithLMStudioParser(enableLMStudioParser),
+                )
 		}
 	} else {
 		// Start new session
@@ -342,9 +350,14 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	if verbose {
 		// Get the system prompt from the agent's memory which includes tools
 		memory := agentInstance.GetMemory()
-		if len(memory) > 0 && memory[0].Role == "system" {
-			fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
-			fmt.Println(memory[0].Content)
+            if len(memory) > 0 && memory[0].Role == "system" {
+                fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
+                // memory[0].Content is a *string; print underlying value
+                if memory[0].Content != nil {
+                    fmt.Println(*memory[0].Content)
+                } else {
+                    fmt.Println("")
+                }
 		} else {
 			fmt.Println("\n=== DEFAULT SYSTEM PROMPT ===")
 			fmt.Println(agent.DefaultConfig().SystemPrompt)
@@ -398,19 +411,27 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 	defer llmClient.Close()
 	
-	// Create agent
-	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
-		agent.WithTemperature(0.7),
-	)
+    // Determine custom parsers
+    enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
+
+    // Create agent
+    agentInstance := agent.New(llmClient,
+        agent.WithMaxIterations(10),
+        agent.WithTemperature(0.7),
+        agent.WithLMStudioParser(enableLMStudioParser),
+    )
 	
 	// If verbose, show the enhanced system prompt (including tools)
 	if verbose {
 		// Get the system prompt from the agent's memory which includes tools
 		memory := agentInstance.GetMemory()
-		if len(memory) > 0 && memory[0].Role == "system" {
-			fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
-			fmt.Println(memory[0].Content)
+            if len(memory) > 0 && memory[0].Role == "system" {
+                fmt.Println("\n=== ENHANCED SYSTEM PROMPT (with tools) ===")
+                if memory[0].Content != nil {
+                    fmt.Println(*memory[0].Content)
+                } else {
+                    fmt.Println("")
+                }
 		} else {
 			fmt.Println("\n=== DEFAULT SYSTEM PROMPT ===")
 			fmt.Println(agent.DefaultConfig().SystemPrompt)

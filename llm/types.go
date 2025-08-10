@@ -1,8 +1,9 @@
 package llm
 
 import (
-	"encoding/json"
-	"time"
+    "bytes"
+    "encoding/json"
+    "time"
 )
 
 // Role represents the role of a message
@@ -33,20 +34,51 @@ type ToolCall struct {
 
 // FunctionCall contains the function name and arguments
 type FunctionCall struct {
-	Name      string          `json:"name"`
-	Arguments json.RawMessage `json:"arguments"`
+    Name      string          `json:"name"`
+    Arguments json.RawMessage `json:"arguments"`
 }
 
-// MarshalJSON customizes JSON serialization for FunctionCall
+// MarshalJSON ensures the `arguments` field is serialized as a JSON string
+// containing the raw JSON of the arguments (per OpenAI-style tool-calls).
+//
+// Many providers return `arguments` as a JSON-encoded string already. If we
+// blindly convert json.RawMessage to string, we can end up double-encoding it
+// (e.g., arguments becomes "\"{\\\"key\\\":\\\"val\\\"}\"").
+//
+// This implementation detects whether the raw value is itself a JSON string; if
+// so, it first unquotes it. Otherwise, it treats the raw bytes as a JSON object
+// and wraps them into a single JSON string as required by the API.
 func (fc FunctionCall) MarshalJSON() ([]byte, error) {
-	type Alias FunctionCall
-	return json.Marshal(&struct {
-		Arguments string `json:"arguments"`
-		*Alias
-	}{
-		Arguments: string(fc.Arguments),
-		Alias:     (*Alias)(&fc),
-	})
+    // Normalize arguments to a plain string containing JSON (no surrounding quotes)
+    var argsStr string
+    raw := []byte(fc.Arguments)
+    raw = bytes.TrimSpace(raw)
+
+    if len(raw) == 0 {
+        argsStr = "{}"
+    } else if len(raw) > 0 && raw[0] == '"' {
+        // The provider returned a JSON string; unquote it first
+        var unquoted string
+        if err := json.Unmarshal(raw, &unquoted); err != nil {
+            // Fallback: best-effort use of the raw bytes
+            unquoted = string(fc.Arguments)
+        }
+        argsStr = unquoted
+    } else {
+        // Raw appears to be an object/array; embed as a string
+        argsStr = string(raw)
+    }
+
+    // Construct the minimal JSON object for a function call
+    type out struct {
+        Name      string `json:"name"`
+        Arguments string `json:"arguments"`
+    }
+
+    return json.Marshal(out{
+        Name:      fc.Name,
+        Arguments: argsStr,
+    })
 }
 
 // ChatRequest represents a chat completion request

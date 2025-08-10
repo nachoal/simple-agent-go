@@ -1,17 +1,18 @@
 package agent
 
 import (
-	"context"
-	"encoding/json"
-	"fmt"
-	"math/rand"
-	"os"
-	"regexp"
-	"sort"
-	"strings"
-	"sync"
-	"sync/atomic"
-	"time"
+    "context"
+    "encoding/json"
+    "fmt"
+    "math/rand"
+    "os"
+    "regexp"
+    "sort"
+    "strings"
+    "sync"
+    "sync/atomic"
+    "time"
+    "unicode"
 
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools"
@@ -114,10 +115,9 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			Max:       a.config.MaxIterations,
 		})
 		
-		// After tools have been executed, encourage final answer
-		if iteration > 0 && len(allToolResults) > 0 {
-			toolChoice = "none"
-		}
+        // Keep allowing tool calls to enable multi-tool chains.
+        // We'll rely on max iterations and model behavior to avoid loops.
+        // toolChoice remains "auto" unless explicitly changed elsewhere.
 		
 		// Create chat request
 		request := &llm.ChatRequest{
@@ -591,10 +591,17 @@ func WithMemorySize(size int) Option {
 
 // WithProgressHandler sets a progress handler function
 func WithProgressHandler(handler func(ProgressEvent)) Option {
-	return func(c *Config) {
-		// Store in a temporary field that we'll extract
-		c.progressHandler = handler
-	}
+    return func(c *Config) {
+        // Store in a temporary field that we'll extract
+        c.progressHandler = handler
+    }
+}
+
+// WithLMStudioParser enables/disables parsing of LM Studio channel-markup tool calls
+func WithLMStudioParser(enabled bool) Option {
+    return func(c *Config) {
+        c.EnableLMStudioParser = enabled
+    }
 }
 
 // emitProgress emits a progress event if a handler is set
@@ -682,13 +689,84 @@ func (a *agent) SetMemory(messages []llm.Message) {
 // parseToolCallsFromContent attempts to parse tool calls from content
 // This is for compatibility with providers that return tool calls in content
 func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
-	var toolCalls []llm.ToolCall
-	
-	// Try to parse as single JSON object
-	var singleCall struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-		ID        string          `json:"id,omitempty"`
+    var toolCalls []llm.ToolCall
+    
+    // 0) LM Studio / channel-markup compatibility (gated by config)
+    // Example: "<|start|>assistant<|channel|>commentary to=functions.google_search <|constrain|>json<|message|>{\"input\":\"Tunguska incident\"}"
+    // Extract tool name after "to=functions." and JSON after "<|message|>"
+    if a.config.EnableLMStudioParser && strings.Contains(content, "to=functions.") && strings.Contains(content, "<|message|>") {
+        // Tool name
+        name := ""
+        if i := strings.Index(content, "to=functions."); i >= 0 {
+            start := i + len("to=functions.")
+            // read until whitespace
+            j := start
+            for j < len(content) && !unicode.IsSpace(rune(content[j])) {
+                j++
+            }
+            if j > start {
+                name = content[start:j]
+            }
+        }
+
+        // JSON arguments after <|message|>
+        argsJSON := ""
+        if k := strings.Index(content, "<|message|>"); k >= 0 {
+            payload := strings.TrimSpace(content[k+len("<|message|>"):])
+
+            // Try to extract first balanced JSON object
+            // Simple brace-balancing scanner
+            depth := 0
+            started := false
+            var b strings.Builder
+            for _, ch := range payload {
+                if !started {
+                    if ch == '{' {
+                        started = true
+                        depth = 1
+                        b.WriteRune(ch)
+                    }
+                    continue
+                } else {
+                    b.WriteRune(ch)
+                    if ch == '{' {
+                        depth++
+                    } else if ch == '}' {
+                        depth--
+                        if depth == 0 {
+                            break
+                        }
+                    }
+                }
+            }
+            if started {
+                argsJSON = b.String()
+            }
+        }
+
+        if name != "" && argsJSON != "" {
+            // Validate JSON
+            var tmp interface{}
+            if json.Unmarshal([]byte(argsJSON), &tmp) == nil {
+                id := fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+                toolCalls = append(toolCalls, llm.ToolCall{
+                    ID:   id,
+                    Type: "function",
+                    Function: llm.FunctionCall{
+                        Name:      name,
+                        Arguments: json.RawMessage(argsJSON),
+                    },
+                })
+                return toolCalls
+            }
+        }
+    }
+
+    // Try to parse as single JSON object
+    var singleCall struct {
+        Name      string          `json:"name"`
+        Arguments json.RawMessage `json:"arguments"`
+        ID        string          `json:"id,omitempty"`
 	}
 	
 	content = strings.TrimSpace(content)
