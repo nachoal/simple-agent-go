@@ -376,15 +376,21 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         cmds = append(cmds, cmd)
     }
 
-    // If model selector modal is active, route all messages to it
+    // If model selector modal is active, route all messages to it,
+    // except confirmation/cancellation messages which the parent handles.
     if m.showModelSelector && m.selector != nil {
-        var scmd tea.Cmd
-        var child tea.Model
-        child, scmd = m.selector.Update(msg)
-        if sel, ok := child.(*ModelSelector); ok {
-            m.selector = sel
+        switch msg.(type) {
+        case selectorConfirmMsg, selectorCancelMsg:
+            // Let parent handle below
+        default:
+            var scmd tea.Cmd
+            var child tea.Model
+            child, scmd = m.selector.Update(msg)
+            if sel, ok := child.(*ModelSelector); ok {
+                m.selector = sel
+            }
+            return m, scmd
         }
-        return m, scmd
     }
 
 
@@ -602,8 +608,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
             }
             m.showModelSelector = true
             m.textarea.Blur()
-            // Trigger selector Init to load models
-            return m, m.selector.Init()
+            // Enter alt screen and trigger selector Init to load models
+            return m, tea.Batch(tea.EnterAltScreen, m.selector.Init())
         }
         // Handle normal messages
         if msg.err != nil {
@@ -628,17 +634,17 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         m.textarea.Focus()
         return m, nil
 
-        case selectorCancelMsg:
-		// Close selector, refocus input
-		m.showModelSelector = false
-		m.selector = nil
-		m.textarea.Focus()
-		return m, nil
+    case selectorCancelMsg:
+        // Close selector, refocus input
+        m.showModelSelector = false
+        m.selector = nil
+        m.textarea.Focus()
+        return m, tea.ExitAltScreen
 
-	case selectorConfirmMsg:
-		// Apply selected provider/model
-		m.provider = msg.provider
-		m.model = msg.model
+    case selectorConfirmMsg:
+        // Apply selected provider/model
+        m.provider = msg.provider
+        m.model = msg.model
 		// Save to config if available
 		if m.configManager != nil {
 			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
@@ -653,11 +659,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				agent.WithTemperature(0.7),
 			)
 		}
-		// Close selector and refocus
-		m.showModelSelector = false
-		m.selector = nil
-		m.textarea.Focus()
-		return m, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
+        // Close selector and refocus
+        m.showModelSelector = false
+        m.selector = nil
+        m.textarea.Focus()
+        return m, tea.Batch(tea.ExitAltScreen, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))))
 
     }
 
