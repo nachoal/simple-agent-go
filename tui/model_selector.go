@@ -25,15 +25,24 @@ func (i ModelItem) FilterValue() string { return i.DisplayName }
 
 // ModelSelector is a component for selecting models
 type ModelSelector struct {
-	list          list.Model
-	providers     map[string]llm.Client
-	selected      ModelItem
-	loading       bool
+    list          list.Model
+    providers     map[string]llm.Client
+    selected      ModelItem
+    loading       bool
 	err           error
 	width         int
 	height        int
 	onSelect      func(provider, model string) tea.Cmd
 }
+
+// Messages emitted by the model selector when used as an in-app modal
+type (
+    selectorConfirmMsg struct {
+        provider string
+        model    string
+    }
+    selectorCancelMsg struct{}
+)
 
 // NewModelSelector creates a new model selector
 func NewModelSelector(providers map[string]llm.Client, onSelect func(provider, model string) tea.Cmd) *ModelSelector {
@@ -73,28 +82,25 @@ func (m *ModelSelector) Init() tea.Cmd {
 }
 
 func (m *ModelSelector) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		m.list.SetSize(msg.Width, msg.Height)
-		return m, nil
+    switch msg := msg.(type) {
+    case tea.WindowSizeMsg:
+        m.width = msg.Width
+        m.height = msg.Height
+        m.list.SetSize(msg.Width, msg.Height)
+        return m, nil
 
-	case tea.KeyMsg:
-		switch msg.String() {
-		case "esc", "ctrl+c":
-			// Quit without selection
-			return m, tea.Quit
-		case "enter":
-			if i, ok := m.list.SelectedItem().(ModelItem); ok {
-				m.selected = i
-				if m.onSelect != nil {
-					return m, m.onSelect(i.Provider, i.Model.ID)
-				}
-				// Quit to return selection
-				return m, tea.Quit
-			}
-		}
+    case tea.KeyMsg:
+        switch msg.String() {
+        case "esc", "ctrl+c":
+            // Notify parent to close selector without quitting the whole app
+            return m, func() tea.Msg { return selectorCancelMsg{} }
+        case "enter":
+            if i, ok := m.list.SelectedItem().(ModelItem); ok {
+                m.selected = i
+                // Notify parent about selection; parent decides how to handle
+                return m, func() tea.Msg { return selectorConfirmMsg{provider: i.Provider, model: i.Model.ID} }
+            }
+        }
 
 	case modelsLoadedMsg:
 		items := make([]list.Item, 0)

@@ -55,7 +55,11 @@ type BorderedTUI struct {
 	toolsUsedInLastQuery map[string]time.Duration
 	
 	// Border style for input
-	borderStyle   lipgloss.Style
+    borderStyle   lipgloss.Style
+
+    // In-app modal: model selector
+    showModelSelector bool
+    selector          *ModelSelector
 }
 
 
@@ -363,14 +367,25 @@ func (m BorderedTUI) Init() tea.Cmd {
 
 
 func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmds []tea.Cmd
-	var cmd tea.Cmd
+    var cmds []tea.Cmd
+    var cmd tea.Cmd
 
-	// Update spinner if we're thinking
-	if m.isThinking {
-		m.spinner, cmd = m.spinner.Update(msg)
-		cmds = append(cmds, cmd)
-	}
+    // Update spinner if we're thinking
+    if m.isThinking {
+        m.spinner, cmd = m.spinner.Update(msg)
+        cmds = append(cmds, cmd)
+    }
+
+    // If model selector modal is active, route all messages to it
+    if m.showModelSelector && m.selector != nil {
+        var scmd tea.Cmd
+        var child tea.Model
+        child, scmd = m.selector.Update(msg)
+        if sel, ok := child.(*ModelSelector); ok {
+            m.selector = sel
+        }
+        return m, scmd
+    }
 
 
 	switch msg := msg.(type) {
@@ -576,71 +591,88 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, tea.ClearScreen
 		}
 		
-		if msg.isModelSelect {
-			// Launch model selector in alt-screen mode
-			return m, func() tea.Msg {
-				// Create the model selector
-				selector := NewModelSelector(m.providers, nil)
-				
-				// Run it in a separate program with alt-screen
-				p := tea.NewProgram(selector, tea.WithAltScreen())
-				finalModel, err := p.Run()
-				if err != nil {
-					return borderedResponseMsg{err: err}
-				}
-				
-				// Check if a model was selected
-				if ms, ok := finalModel.(*ModelSelector); ok && ms.selected.Provider != "" {
-					return modelSelectedMsg{
-						provider: ms.selected.Provider,
-						model:    ms.selected.Model.ID,
-					}
-				}
-				
-				// No selection made
-				return nil
-			}
-		}
-		
-		// Handle normal messages
-		if msg.err != nil {
-			// Print error message
-			return m, tea.Printf("%s\n\n", renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
-		} else if msg.content != "" {
-			if msg.isCommand {
-				// Print command output
-			m.textarea.Focus()
-				return m, tea.Printf("%s\n\n", renderCommandMessage(msg.content))
-			} else {
-				// Print assistant message
-				content := msg.content
-				m.historyForAgent = append(m.historyForAgent, llm.Message{
-					Role:    llm.RoleAssistant,
-					Content: &content,
-				})
-				m.textarea.Focus()
-				return m, tea.Printf("%s\n\n", renderAssistantMessage(m.renderer, msg.content))
-			}
-		}
+        if msg.isModelSelect {
+            // Show in-app model selector modal
+            m.selector = NewModelSelector(m.providers, nil)
+            m.showModelSelector = true
+            m.textarea.Blur()
+            return m, nil
+        }
+        // Handle normal messages
+        if msg.err != nil {
+            // Print error message
+            return m, tea.Printf("%s\n\n", renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
+        } else if msg.content != "" {
+            if msg.isCommand {
+                // Print command output
+                m.textarea.Focus()
+                return m, tea.Printf("%s\n\n", renderCommandMessage(msg.content))
+            } else {
+                // Print assistant message
+                content := msg.content
+                m.historyForAgent = append(m.historyForAgent, llm.Message{
+                    Role:    llm.RoleAssistant,
+                    Content: &content,
+                })
+                m.textarea.Focus()
+                return m, tea.Printf("%s\n\n", renderAssistantMessage(m.renderer, msg.content))
+            }
+        }
+        m.textarea.Focus()
+        return m, nil
+
+        case selectorCancelMsg:
+		// Close selector, refocus input
+		m.showModelSelector = false
+		m.selector = nil
 		m.textarea.Focus()
 		return m, nil
-	}
 
-	// Update textarea
-	oldValue := m.textarea.Value()
-	m.textarea, cmd = m.textarea.Update(msg)
-	cmds = append(cmds, cmd)
+	case selectorConfirmMsg:
+		// Apply selected provider/model
+		m.provider = msg.provider
+		m.model = msg.model
+		// Save to config if available
+		if m.configManager != nil {
+			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
+				m.err = fmt.Errorf("failed to save config: %w", err)
+			}
+		}
+		// Update agent client if available
+		if newClient, ok := m.providers[msg.provider]; ok {
+			m.llmClient = newClient
+			m.agent = agent.New(newClient,
+				agent.WithMaxIterations(10),
+				agent.WithTemperature(0.7),
+			)
+		}
+		// Close selector and refocus
+		m.showModelSelector = false
+		m.selector = nil
+		m.textarea.Focus()
+		return m, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
+
+    }
+
+    // Update textarea
+    oldValue := m.textarea.Value()
+    m.textarea, cmd = m.textarea.Update(msg)
+    cmds = append(cmds, cmd)
 	
 	// Check if content changed to adjust height
 	if oldValue != m.textarea.Value() {
 		m.adjustTextareaHeight()
 	}
 
-	return m, tea.Batch(cmds...)
+    return m, tea.Batch(cmds...)
 }
 
 func (m BorderedTUI) View() string {
-	var b strings.Builder
+    // Render modal selector if active
+    if m.showModelSelector && m.selector != nil {
+        return m.selector.View()
+    }
+    var b strings.Builder
 	
 	// Only show the live region: streaming content (future) + spinner + input box
 	
