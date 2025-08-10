@@ -594,9 +594,16 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
         if msg.isModelSelect {
             // Show in-app model selector modal
             m.selector = NewModelSelector(m.providers, nil)
+            // Initialize selector size to match current TUI
+            if m.selector != nil {
+                m.selector.width = m.width
+                m.selector.height = m.height
+                m.selector.list.SetSize(m.width, m.height)
+            }
             m.showModelSelector = true
             m.textarea.Blur()
-            return m, nil
+            // Trigger selector Init to load models
+            return m, m.selector.Init()
         }
         // Handle normal messages
         if msg.err != nil {
