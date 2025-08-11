@@ -32,11 +32,11 @@ func (v *Validator) Validate(s interface{}) error {
 	}
 
 	typ := val.Type()
-	
+
 	for i := 0; i < val.NumField(); i++ {
 		field := val.Field(i)
 		structField := typ.Field(i)
-		
+
 		if !structField.IsExported() {
 			continue
 		}
@@ -44,14 +44,14 @@ func (v *Validator) Validate(s interface{}) error {
 		// Get tags
 		schemaTag := structField.Tag.Get(v.tagName)
 		jsonTag := structField.Tag.Get("json")
-		
+
 		// Skip fields with json:"-"
 		if jsonTag == "-" {
 			continue
 		}
 
 		fieldName := getFieldName(structField, jsonTag)
-		
+
 		// Validate the field
 		if err := v.validateField(field, structField, schemaTag, fieldName); err != nil {
 			return err
@@ -79,7 +79,7 @@ func (v *Validator) validateField(value reflect.Value, field reflect.StructField
 	parts := strings.Split(tag, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		
+
 		if err := v.validateTag(value, field, part, fieldName); err != nil {
 			return err
 		}
@@ -259,7 +259,7 @@ func getFieldName(field reflect.StructField, jsonTag string) string {
 
 	parts := strings.Split(jsonTag, ",")
 	name := strings.TrimSpace(parts[0])
-	
+
 	if name == "" {
 		return field.Name
 	}

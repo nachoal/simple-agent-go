@@ -182,7 +182,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 			// Parse SSE event
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
-				
+
 				// Check for end of stream
 				if data == "[DONE]" {
 					return
@@ -284,7 +284,7 @@ func (c *Client) setHeaders(req *http.Request) {
 // doWithRetries executes a function with retries
 func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 	var lastErr error
-	
+
 	for i := 0; i <= c.options.MaxRetries; i++ {
 		if i > 0 {
 			// Exponential backoff
@@ -302,7 +302,7 @@ func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 			if strings.Contains(err.Error(), "status 429") || // Rate limit
 				strings.Contains(err.Error(), "status 500") || // Server error
 				strings.Contains(err.Error(), "status 502") || // Bad gateway
-				strings.Contains(err.Error(), "status 503") {  // Service unavailable
+				strings.Contains(err.Error(), "status 503") { // Service unavailable
 				continue
 			}
 			return err

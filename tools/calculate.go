@@ -20,7 +20,6 @@ type CalculateTool struct {
 	base.BaseTool
 }
 
-
 // Parameters returns the parameters struct
 func (t *CalculateTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -74,7 +73,7 @@ func (t *CalculateTool) evaluateSimple(expr string) (float64, error) {
 		if len(parts) == 2 {
 			left, err1 := t.evaluateSimple(parts[0])
 			right, err2 := t.evaluateSimple(parts[1])
-			
+
 			if err1 != nil || err2 != nil {
 				continue
 			}
@@ -126,10 +125,10 @@ func (t *CalculateTool) evaluateSimple(expr string) (float64, error) {
 
 	// Handle constants
 	constants := map[string]float64{
-		"pi":  math.Pi,
-		"e":   math.E,
-		"PI":  math.Pi,
-		"E":   math.E,
+		"pi": math.Pi,
+		"e":  math.E,
+		"PI": math.Pi,
+		"E":  math.E,
 	}
 
 	if val, ok := constants[expr]; ok {
@@ -138,4 +137,3 @@ func (t *CalculateTool) evaluateSimple(expr string) (float64, error) {
 
 	return 0, fmt.Errorf("unable to evaluate expression: %s", expr)
 }
-

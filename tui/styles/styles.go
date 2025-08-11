@@ -9,12 +9,12 @@ type Styles struct {
 	Theme Theme
 
 	// Layout
-	App          lipgloss.Style
-	Header       lipgloss.Style
-	Footer       lipgloss.Style
-	ChatPanel    lipgloss.Style
-	ToolsPanel   lipgloss.Style
-	InputArea    lipgloss.Style
+	App        lipgloss.Style
+	Header     lipgloss.Style
+	Footer     lipgloss.Style
+	ChatPanel  lipgloss.Style
+	ToolsPanel lipgloss.Style
+	InputArea  lipgloss.Style
 
 	// Messages
 	UserMessage      lipgloss.Style
@@ -33,19 +33,19 @@ type Styles struct {
 	ToolResult  lipgloss.Style
 
 	// UI Elements
-	Border       lipgloss.Style
-	Title        lipgloss.Style
-	Subtitle     lipgloss.Style
-	Label        lipgloss.Style
-	Help         lipgloss.Style
-	Spinner      lipgloss.Style
-	ProgressBar  lipgloss.Style
-	StatusBar    lipgloss.Style
+	Border      lipgloss.Style
+	Title       lipgloss.Style
+	Subtitle    lipgloss.Style
+	Label       lipgloss.Style
+	Help        lipgloss.Style
+	Spinner     lipgloss.Style
+	ProgressBar lipgloss.Style
+	StatusBar   lipgloss.Style
 
 	// Code
-	CodeBlock    lipgloss.Style
-	CodeInline   lipgloss.Style
-	Syntax       lipgloss.Style
+	CodeBlock  lipgloss.Style
+	CodeInline lipgloss.Style
+	Syntax     lipgloss.Style
 }
 
 // NewStyles creates a new styles instance with the given theme

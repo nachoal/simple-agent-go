@@ -19,7 +19,6 @@ type FileWriteTool struct {
 	base.BaseTool
 }
 
-
 // Parameters returns the parameters struct
 func (t *FileWriteTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -62,4 +61,3 @@ func (t *FileWriteTool) Execute(ctx context.Context, params json.RawMessage) (st
 
 	return fmt.Sprintf("Successfully wrote to %s", cleanPath), nil
 }
-

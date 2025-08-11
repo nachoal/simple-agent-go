@@ -37,19 +37,19 @@ func (g *Generator) Generate(v interface{}) (map[string]interface{}, error) {
 // GenerateFunctionSchema creates an OpenAI-compatible function schema
 func (g *Generator) GenerateFunctionSchema(name, description string, params interface{}) map[string]interface{} {
 	schema, _ := g.Generate(params)
-	
+
 	// Ensure additionalProperties is false (matches Ruby)
 	if schema != nil {
 		schema["additionalProperties"] = false
 	}
-	
+
 	return map[string]interface{}{
 		"type": "function",
 		"function": map[string]interface{}{
 			"name":        name,
 			"description": description,
 			"parameters":  schema,
-			"strict":     true, // Match Ruby's strict flag
+			"strict":      true, // Match Ruby's strict flag
 		},
 	}
 }
@@ -66,7 +66,7 @@ func (g *Generator) generateObject(t reflect.Type) map[string]interface{} {
 
 	for i := 0; i < t.NumField(); i++ {
 		field := t.Field(i)
-		
+
 		// Skip unexported fields
 		if !field.IsExported() {
 			continue
@@ -91,7 +91,7 @@ func (g *Generator) generateObject(t reflect.Type) map[string]interface{} {
 
 		// Generate field schema
 		fieldSchema := g.generateFieldSchema(field)
-		
+
 		// Add description if present
 		if desc := field.Tag.Get("description"); desc != "" {
 			fieldSchema["description"] = desc
@@ -168,7 +168,7 @@ func (g *Generator) parseSchemaTag(tag string, schema map[string]interface{}) {
 	parts := strings.Split(tag, ",")
 	for _, part := range parts {
 		part = strings.TrimSpace(part)
-		
+
 		// Handle enum values
 		if strings.HasPrefix(part, "enum:") {
 			values := strings.Split(part[5:], "|")
@@ -226,7 +226,7 @@ func getFieldName(field reflect.StructField, jsonTag string) string {
 
 	parts := strings.Split(jsonTag, ",")
 	name := strings.TrimSpace(parts[0])
-	
+
 	if name == "" {
 		return field.Name
 	}

@@ -130,7 +130,7 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 
 	// Format results
 	var output strings.Builder
-	
+
 	// Header with search information
 	output.WriteString(fmt.Sprintf("Found %s results in %s seconds\n\n",
 		result.SearchInformation.FormattedTotalResults,
@@ -141,7 +141,7 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 		output.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, item.Title))
 		output.WriteString(fmt.Sprintf("   URL: %s\n", item.Link))
 		output.WriteString(fmt.Sprintf("   Description: %s\n", item.Snippet))
-		
+
 		// Add optional fields if present
 		if item.FileFormat != "" {
 			output.WriteString(fmt.Sprintf("   File Format: %s\n", item.FileFormat))
@@ -149,7 +149,7 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 		if item.DisplayLink != "" {
 			output.WriteString(fmt.Sprintf("   Site Name: %s\n", item.DisplayLink))
 		}
-		
+
 		// Add meta description if available
 		if len(item.Pagemap.Metatags) > 0 {
 			metatags := item.Pagemap.Metatags[0]
@@ -157,7 +157,7 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 				output.WriteString(fmt.Sprintf("   Description (meta): %s\n", desc))
 			}
 		}
-		
+
 		if i < len(result.Items)-1 {
 			output.WriteString("\n")
 		}

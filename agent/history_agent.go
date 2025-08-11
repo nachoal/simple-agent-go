@@ -31,19 +31,19 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 	if ha.currentSession != nil {
 		initialMessageCount = len(ha.currentSession.Messages)
 	}
-	
+
 	// Execute query first
 	response, err := ha.Agent.Query(ctx, query)
-	
+
 	// If successful, update history with the complete conversation
 	if err == nil && ha.currentSession != nil {
 		// Get the complete memory from the agent (includes all tool interactions)
 		agentMemory := ha.Agent.GetMemory()
-		
+
 		// Convert and store all new messages since our last save
 		// We need to sync our session with the agent's memory
 		ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
-		
+
 		// Save session with complete history
 		if saveErr := ha.historyManager.SaveSession(ha.currentSession); saveErr != nil {
 			// Log error but don't fail the query
@@ -54,7 +54,7 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 		// Query failed - rollback to initial state
 		ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
 	}
-	
+
 	return response, err
 }
 
@@ -65,25 +65,25 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 	if ha.currentSession != nil {
 		initialMessageCount = len(ha.currentSession.Messages)
 	}
-	
+
 	// Get the stream
 	events, err := ha.Agent.QueryStream(ctx, query)
 	if err != nil {
 		return nil, err
 	}
-	
+
 	// Create a new channel to intercept events
 	intercepted := make(chan StreamEvent, 100)
-	
+
 	go func() {
 		defer close(intercepted)
-		
+
 		streamSucceeded := false
-		
+
 		for event := range events {
 			// Forward the event
 			intercepted <- event
-			
+
 			// Check for completion or error
 			switch event.Type {
 			case EventTypeComplete:
@@ -92,7 +92,7 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 				if ha.currentSession != nil {
 					agentMemory := ha.Agent.GetMemory()
 					ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
-					
+
 					// Save session with complete history
 					if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
 						// Send error event through the stream
@@ -111,13 +111,13 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 				}
 			}
 		}
-		
+
 		// If stream ended without completion or error, rollback
 		if !streamSucceeded && ha.currentSession != nil {
 			ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
 		}
 	}()
-	
+
 	return intercepted, nil
 }
 
@@ -136,13 +136,13 @@ func (ha *HistoryAgent) RestoreMemoryFromSession(session *history.Session) {
 	if session == nil || len(session.Messages) == 0 {
 		return
 	}
-	
+
 	// Convert and restore messages
 	llmMessages := ha.historyManager.ConvertToLLMMessages(session.Messages)
-	
+
 	// Set the memory directly
 	ha.Agent.SetMemory(llmMessages)
-	
+
 	// Update current session
 	ha.currentSession = session
 }

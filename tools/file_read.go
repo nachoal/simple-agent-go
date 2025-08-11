@@ -18,7 +18,6 @@ type FileReadTool struct {
 	base.BaseTool
 }
 
-
 // Parameters returns the parameters struct
 func (t *FileReadTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -46,7 +45,7 @@ func (t *FileReadTool) Execute(ctx context.Context, params json.RawMessage) (str
 
 	// Clean and validate the path
 	cleanPath := filepath.Clean(inputParams.Path)
-	
+
 	// Check if file exists
 	info, err := os.Stat(cleanPath)
 	if err != nil {
@@ -73,4 +72,3 @@ func (t *FileReadTool) Execute(ctx context.Context, params json.RawMessage) (str
 	// Return the content directly (Ruby behavior)
 	return string(content), nil
 }
-

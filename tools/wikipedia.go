@@ -104,16 +104,16 @@ func (t *WikipediaTool) Execute(ctx context.Context, params json.RawMessage) (st
 		if i > 0 {
 			output.WriteString("\n---\n\n")
 		}
-		
+
 		// Clean up the snippet (remove HTML tags)
 		snippet := strings.ReplaceAll(item.Snippet, "<span class=\"searchmatch\">", "**")
 		snippet = strings.ReplaceAll(snippet, "</span>", "**")
 		snippet = strings.ReplaceAll(snippet, "&quot;", "\"")
-		
+
 		output.WriteString(fmt.Sprintf("%d. **%s**\n", i+1, item.Title))
 		output.WriteString(fmt.Sprintf("   %s\n", snippet))
 		output.WriteString(fmt.Sprintf("   (Page ID: %d, Size: %d bytes)\n", item.PageID, item.Size))
-		
+
 		// For the first result, also fetch the page extract
 		if i == 0 {
 			extract, err := t.fetchPageExtract(ctx, item.PageID)

@@ -93,15 +93,15 @@ const (
 
 // KeyMap defines key bindings
 type KeyMap struct {
-	Quit       key.Binding
-	Send       key.Binding
-	Clear      key.Binding
-	ToggleHelp key.Binding
+	Quit        key.Binding
+	Send        key.Binding
+	Clear       key.Binding
+	ToggleHelp  key.Binding
 	ToggleTools key.Binding
-	NextView   key.Binding
-	PrevView   key.Binding
-	Copy       key.Binding
-	Paste      key.Binding
+	NextView    key.Binding
+	PrevView    key.Binding
+	Copy        key.Binding
+	Paste       key.Binding
 }
 
 // DefaultKeyMap returns default key bindings

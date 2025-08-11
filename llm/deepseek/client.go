@@ -28,11 +28,11 @@ type Client struct {
 // NewClient creates a new DeepSeek client
 func NewClient(opts ...llm.ClientOption) (*Client, error) {
 	options := llm.ClientOptions{
-		BaseURL:    defaultBaseURL,
-		Timeout:    defaultTimeout,
-		MaxRetries: 3,
+		BaseURL:      defaultBaseURL,
+		Timeout:      defaultTimeout,
+		MaxRetries:   3,
 		DefaultModel: defaultModel,
-		Headers:    make(map[string]string),
+		Headers:      make(map[string]string),
 	}
 
 	// Apply options
@@ -131,17 +131,17 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 	// DeepSeek doesn't have a models endpoint, return hardcoded list
 	models := []llm.Model{
 		{
-			ID:      "deepseek-chat",
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "deepseek",
+			ID:          "deepseek-chat",
+			Object:      "model",
+			Created:     time.Now().Unix(),
+			OwnedBy:     "deepseek",
 			Description: "DeepSeek Chat model optimized for dialogue",
 		},
 		{
-			ID:      "deepseek-coder",
-			Object:  "model",
-			Created: time.Now().Unix(),
-			OwnedBy: "deepseek",
+			ID:          "deepseek-coder",
+			Object:      "model",
+			Created:     time.Now().Unix(),
+			OwnedBy:     "deepseek",
 			Description: "DeepSeek Coder model optimized for code generation",
 		},
 	}

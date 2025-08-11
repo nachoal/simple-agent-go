@@ -1,9 +1,9 @@
 package llm
 
 import (
-    "bytes"
-    "encoding/json"
-    "time"
+	"bytes"
+	"encoding/json"
+	"time"
 )
 
 // Role represents the role of a message
@@ -18,24 +18,24 @@ const (
 
 // Message represents a chat message
 type Message struct {
-	Role       Role            `json:"role"`
-	Content    *string         `json:"content,omitempty"`      // Pointer to allow nil/omission
-	Name       string          `json:"name,omitempty"`         // For tool messages
-	ToolCallID string          `json:"tool_call_id,omitempty"` // For tool responses
-	ToolCalls  []ToolCall      `json:"tool_calls,omitempty"`   // For assistant messages
+	Role       Role       `json:"role"`
+	Content    *string    `json:"content,omitempty"`      // Pointer to allow nil/omission
+	Name       string     `json:"name,omitempty"`         // For tool messages
+	ToolCallID string     `json:"tool_call_id,omitempty"` // For tool responses
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // For assistant messages
 }
 
 // ToolCall represents a function/tool call request
 type ToolCall struct {
-	ID       string          `json:"id"`
-	Type     string          `json:"type"` // "function"
-	Function FunctionCall    `json:"function"`
+	ID       string       `json:"id"`
+	Type     string       `json:"type"` // "function"
+	Function FunctionCall `json:"function"`
 }
 
 // FunctionCall contains the function name and arguments
 type FunctionCall struct {
-    Name      string          `json:"name"`
-    Arguments json.RawMessage `json:"arguments"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // MarshalJSON ensures the `arguments` field is serialized as a JSON string
@@ -49,36 +49,36 @@ type FunctionCall struct {
 // so, it first unquotes it. Otherwise, it treats the raw bytes as a JSON object
 // and wraps them into a single JSON string as required by the API.
 func (fc FunctionCall) MarshalJSON() ([]byte, error) {
-    // Normalize arguments to a plain string containing JSON (no surrounding quotes)
-    var argsStr string
-    raw := []byte(fc.Arguments)
-    raw = bytes.TrimSpace(raw)
+	// Normalize arguments to a plain string containing JSON (no surrounding quotes)
+	var argsStr string
+	raw := []byte(fc.Arguments)
+	raw = bytes.TrimSpace(raw)
 
-    if len(raw) == 0 {
-        argsStr = "{}"
-    } else if len(raw) > 0 && raw[0] == '"' {
-        // The provider returned a JSON string; unquote it first
-        var unquoted string
-        if err := json.Unmarshal(raw, &unquoted); err != nil {
-            // Fallback: best-effort use of the raw bytes
-            unquoted = string(fc.Arguments)
-        }
-        argsStr = unquoted
-    } else {
-        // Raw appears to be an object/array; embed as a string
-        argsStr = string(raw)
-    }
+	if len(raw) == 0 {
+		argsStr = "{}"
+	} else if len(raw) > 0 && raw[0] == '"' {
+		// The provider returned a JSON string; unquote it first
+		var unquoted string
+		if err := json.Unmarshal(raw, &unquoted); err != nil {
+			// Fallback: best-effort use of the raw bytes
+			unquoted = string(fc.Arguments)
+		}
+		argsStr = unquoted
+	} else {
+		// Raw appears to be an object/array; embed as a string
+		argsStr = string(raw)
+	}
 
-    // Construct the minimal JSON object for a function call
-    type out struct {
-        Name      string `json:"name"`
-        Arguments string `json:"arguments"`
-    }
+	// Construct the minimal JSON object for a function call
+	type out struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	}
 
-    return json.Marshal(out{
-        Name:      fc.Name,
-        Arguments: argsStr,
-    })
+	return json.Marshal(out{
+		Name:      fc.Name,
+		Arguments: argsStr,
+	})
 }
 
 // ChatRequest represents a chat completion request
@@ -116,10 +116,10 @@ type ChatResponse struct {
 
 // Choice represents a single response choice
 type Choice struct {
-	Index        int          `json:"index"`
-	Message      Message      `json:"message"`
-	FinishReason string       `json:"finish_reason"` // "stop", "length", "tool_calls", etc.
-	Delta        *Message     `json:"delta,omitempty"` // For streaming
+	Index        int      `json:"index"`
+	Message      Message  `json:"message"`
+	FinishReason string   `json:"finish_reason"`   // "stop", "length", "tool_calls", etc.
+	Delta        *Message `json:"delta,omitempty"` // For streaming
 }
 
 // Usage represents token usage information
@@ -138,23 +138,23 @@ type ErrorResponse struct {
 
 // StreamEvent represents a server-sent event for streaming
 type StreamEvent struct {
-	ID      string        `json:"id"`
-	Object  string        `json:"object"`
-	Created int64         `json:"created"`
-	Model   string        `json:"model"`
-	Choices []Choice      `json:"choices"`
-	Usage   *Usage        `json:"usage,omitempty"`
+	ID      string   `json:"id"`
+	Object  string   `json:"object"`
+	Created int64    `json:"created"`
+	Model   string   `json:"model"`
+	Choices []Choice `json:"choices"`
+	Usage   *Usage   `json:"usage,omitempty"`
 }
 
 // ClientOptions contains options for creating an LLM client
 type ClientOptions struct {
-	APIKey         string
-	BaseURL        string
-	Timeout        time.Duration
-	MaxRetries     int
-	DefaultModel   string
-	Organization   string
-	Headers        map[string]string
+	APIKey       string
+	BaseURL      string
+	Timeout      time.Duration
+	MaxRetries   int
+	DefaultModel string
+	Organization string
+	Headers      map[string]string
 }
 
 // ClientOption is a functional option for configuring clients

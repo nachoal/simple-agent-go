@@ -30,11 +30,11 @@ type Client struct {
 // NewClient creates a new OpenAI client
 func NewClient(opts ...llm.ClientOption) (*Client, error) {
 	options := llm.ClientOptions{
-		BaseURL:    defaultBaseURL,
-		Timeout:    defaultTimeout,
-		MaxRetries: 3,
+		BaseURL:      defaultBaseURL,
+		Timeout:      defaultTimeout,
+		MaxRetries:   3,
 		DefaultModel: defaultModel,
-		Headers:    make(map[string]string),
+		Headers:      make(map[string]string),
 	}
 
 	// Apply options
@@ -188,7 +188,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 			// Parse SSE event
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
-				
+
 				// Check for end of stream
 				if data == "[DONE]" {
 					return
@@ -281,7 +281,7 @@ func (c *Client) Close() error {
 func (c *Client) setHeaders(req *http.Request) {
 	req.Header.Set("Authorization", "Bearer "+c.options.APIKey)
 	req.Header.Set("User-Agent", "simple-agent-go/1.0")
-	
+
 	if c.options.Organization != "" {
 		req.Header.Set("OpenAI-Organization", c.options.Organization)
 	}
@@ -295,7 +295,7 @@ func (c *Client) setHeaders(req *http.Request) {
 // doWithRetries executes a function with retries
 func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 	var lastErr error
-	
+
 	for i := 0; i <= c.options.MaxRetries; i++ {
 		if i > 0 {
 			// Exponential backoff
@@ -313,7 +313,7 @@ func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 			if strings.Contains(err.Error(), "status 429") || // Rate limit
 				strings.Contains(err.Error(), "status 500") || // Server error
 				strings.Contains(err.Error(), "status 502") || // Bad gateway
-				strings.Contains(err.Error(), "status 503") {  // Service unavailable
+				strings.Contains(err.Error(), "status 503") { // Service unavailable
 				continue
 			}
 			return err
@@ -333,15 +333,15 @@ func (c *Client) doWithRetries(ctx context.Context, fn func() error) error {
 func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interface{} {
 	// Create a map from the request
 	reqMap := make(map[string]interface{})
-	
+
 	// Always include these fields
 	reqMap["model"] = request.Model
 	reqMap["messages"] = request.Messages
-	
+
 	// Handle temperature based on model
 	modelLower := strings.ToLower(request.Model)
 	isO3Model := strings.HasPrefix(modelLower, "o3") || modelLower == "o3-mini"
-	
+
 	if request.Temperature > 0 {
 		// O3 models only support temperature of 1
 		if isO3Model && request.Temperature != 1.0 {
@@ -352,7 +352,7 @@ func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interfa
 			reqMap["temperature"] = request.Temperature
 		}
 	}
-	
+
 	// O3 models may have restrictions on other parameters too
 	if request.TopP > 0 && !isO3Model {
 		reqMap["top_p"] = request.TopP
@@ -369,7 +369,7 @@ func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interfa
 	if request.ResponseFormat != nil {
 		reqMap["response_format"] = request.ResponseFormat
 	}
-	
+
 	// O3 models may not support penalty parameters
 	if request.FrequencyPenalty > 0 && !isO3Model {
 		reqMap["frequency_penalty"] = request.FrequencyPenalty
@@ -380,7 +380,7 @@ func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interfa
 	if len(request.Stop) > 0 {
 		reqMap["stop"] = request.Stop
 	}
-	
+
 	// Handle max_tokens vs max_completion_tokens based on model
 	if request.MaxTokens > 0 {
 		if isO3Model {
@@ -389,6 +389,6 @@ func (c *Client) buildOpenAIRequest(request *llm.ChatRequest) map[string]interfa
 			reqMap["max_tokens"] = request.MaxTokens
 		}
 	}
-	
+
 	return reqMap
 }

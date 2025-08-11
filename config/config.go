@@ -34,7 +34,7 @@ func NewManager() (*Manager, error) {
 	}
 
 	configPath := filepath.Join(configDir, "config.json")
-	
+
 	m := &Manager{
 		configPath: configPath,
 		config:     &Config{},

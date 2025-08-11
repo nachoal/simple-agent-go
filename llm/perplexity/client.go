@@ -38,11 +38,11 @@ type PerplexityRequest struct {
 	FrequencyPenalty float32                  `json:"frequency_penalty,omitempty"`
 	PresencePenalty  float32                  `json:"presence_penalty,omitempty"`
 	// Perplexity-specific fields
-	SearchDomainFilter []string `json:"search_domain_filter,omitempty"`
-	ReturnCitations    bool     `json:"return_citations,omitempty"`
-	ReturnImages       bool     `json:"return_images,omitempty"`
-	ReturnRelated      bool     `json:"return_related_questions,omitempty"`
-	SearchRecencyFilter string  `json:"search_recency_filter,omitempty"`
+	SearchDomainFilter  []string `json:"search_domain_filter,omitempty"`
+	ReturnCitations     bool     `json:"return_citations,omitempty"`
+	ReturnImages        bool     `json:"return_images,omitempty"`
+	ReturnRelated       bool     `json:"return_related_questions,omitempty"`
+	SearchRecencyFilter string   `json:"search_recency_filter,omitempty"`
 }
 
 // NewClient creates a new Perplexity client

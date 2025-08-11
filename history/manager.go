@@ -29,17 +29,17 @@ func NewManager() (*Manager, error) {
 	}
 
 	sessionsDir := filepath.Join(homeDir, ".simple-agent", "sessions")
-	
+
 	m := &Manager{
 		sessionsDir: sessionsDir,
 		metaPath:    filepath.Join(sessionsDir, "meta.json"),
 	}
-	
+
 	// Create directory
 	if err := os.MkdirAll(m.sessionsDir, 0755); err != nil {
 		return nil, fmt.Errorf("failed to create sessions directory: %w", err)
 	}
-	
+
 	// Initialize meta if not exists
 	if _, err := os.Stat(m.metaPath); os.IsNotExist(err) {
 		if err := m.saveMeta(&MetaIndex{
@@ -49,17 +49,17 @@ func NewManager() (*Manager, error) {
 			return nil, fmt.Errorf("failed to initialize meta index: %w", err)
 		}
 	}
-	
+
 	return m, nil
 }
 
 // StartSession creates a new session
 func (m *Manager) StartSession(path, provider, model string) (*Session, error) {
 	// Generate session ID
-	id := fmt.Sprintf("%s_%s", 
+	id := fmt.Sprintf("%s_%s",
 		time.Now().Format("20060102_150405"),
 		generateRandomID(6))
-	
+
 	session := &Session{
 		ID:        id,
 		Version:   "1.0",
@@ -73,12 +73,12 @@ func (m *Manager) StartSession(path, provider, model string) (*Session, error) {
 		},
 		Messages: []Message{},
 	}
-	
+
 	// Update meta index
 	if err := m.updatePathIndex(path, id); err != nil {
 		return nil, fmt.Errorf("failed to update path index: %w", err)
 	}
-	
+
 	return session, nil
 }
 
@@ -86,36 +86,36 @@ func (m *Manager) StartSession(path, provider, model string) (*Session, error) {
 func (m *Manager) SaveSession(session *Session) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	session.UpdatedAt = time.Now()
-	
+
 	// Generate title if empty
 	if session.Metadata.Title == "" {
 		session.Metadata.Title = m.generateTitle(session)
 	}
-	
+
 	// Save to file
 	data, err := json.MarshalIndent(session, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal session: %w", err)
 	}
-	
+
 	filename := filepath.Join(m.sessionsDir, session.ID+".json")
 	if err := os.WriteFile(filename, data, 0644); err != nil {
 		return fmt.Errorf("failed to write session file: %w", err)
 	}
-	
+
 	// Update last session in meta
 	meta, err := m.loadMeta()
 	if err != nil {
 		return fmt.Errorf("failed to load meta: %w", err)
 	}
-	
+
 	meta.LastSession = session.ID
 	if err := m.saveMeta(meta); err != nil {
 		return fmt.Errorf("failed to save meta: %w", err)
 	}
-	
+
 	return nil
 }
 
@@ -123,18 +123,18 @@ func (m *Manager) SaveSession(session *Session) error {
 func (m *Manager) LoadSession(id string) (*Session, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	
+
 	filename := filepath.Join(m.sessionsDir, id+".json")
 	data, err := os.ReadFile(filename)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read session file: %w", err)
 	}
-	
+
 	var session Session
 	if err := json.Unmarshal(data, &session); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal session: %w", err)
 	}
-	
+
 	return &session, nil
 }
 
@@ -143,16 +143,16 @@ func (m *Manager) GetLastSessionForPath(path string) (*Session, error) {
 	m.mu.RLock()
 	meta, err := m.loadMeta()
 	m.mu.RUnlock()
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to load meta: %w", err)
 	}
-	
+
 	sessionIDs, ok := meta.PathIndex[path]
 	if !ok || len(sessionIDs) == 0 {
 		return nil, fmt.Errorf("no sessions found for path: %s", path)
 	}
-	
+
 	// Get the most recent (last in list)
 	lastID := sessionIDs[len(sessionIDs)-1]
 	return m.LoadSession(lastID)
@@ -163,23 +163,23 @@ func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
 	m.mu.RLock()
 	meta, err := m.loadMeta()
 	m.mu.RUnlock()
-	
+
 	if err != nil {
 		return nil, fmt.Errorf("failed to load meta: %w", err)
 	}
-	
+
 	sessionIDs, ok := meta.PathIndex[path]
 	if !ok {
 		return []SessionInfo{}, nil
 	}
-	
+
 	var sessions []SessionInfo
 	for _, id := range sessionIDs {
 		session, err := m.LoadSession(id)
 		if err != nil {
 			continue
 		}
-		
+
 		sessions = append(sessions, SessionInfo{
 			ID:        session.ID,
 			Title:     session.Metadata.Title,
@@ -190,12 +190,12 @@ func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
 			Model:     session.Model,
 		})
 	}
-	
+
 	// Sort by creation date, newest first
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
 	})
-	
+
 	return sessions, nil
 }
 
@@ -209,7 +209,7 @@ func (m *Manager) ConvertFromLLMMessages(llmMessages []llm.Message) []Message {
 			ToolCallID: msg.ToolCallID,
 			Timestamp:  time.Now(), // We don't have original timestamps
 		}
-		
+
 		// Convert tool calls
 		if len(msg.ToolCalls) > 0 {
 			messages[i].ToolCalls = make([]ToolCall, len(msg.ToolCalls))
@@ -237,7 +237,7 @@ func (m *Manager) ConvertToLLMMessages(histMessages []Message) []llm.Message {
 			Content:    msg.Content,
 			ToolCallID: msg.ToolCallID,
 		}
-		
+
 		// Convert tool calls
 		if len(msg.ToolCalls) > 0 {
 			messages[i].ToolCalls = make([]llm.ToolCall, len(msg.ToolCalls))
@@ -263,12 +263,12 @@ func (m *Manager) loadMeta() (*MetaIndex, error) {
 	if err != nil {
 		return nil, err
 	}
-	
+
 	var meta MetaIndex
 	if err := json.Unmarshal(data, &meta); err != nil {
 		return nil, err
 	}
-	
+
 	return &meta, nil
 }
 
@@ -277,26 +277,26 @@ func (m *Manager) saveMeta(meta *MetaIndex) error {
 	if err != nil {
 		return err
 	}
-	
+
 	return os.WriteFile(m.metaPath, data, 0644)
 }
 
 func (m *Manager) updatePathIndex(path, sessionID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	
+
 	meta, err := m.loadMeta()
 	if err != nil {
 		return err
 	}
-	
+
 	if meta.PathIndex == nil {
 		meta.PathIndex = make(map[string][]string)
 	}
-	
+
 	// Append session ID to path index
 	meta.PathIndex[path] = append(meta.PathIndex[path], sessionID)
-	
+
 	return m.saveMeta(meta)
 }
 
@@ -315,7 +315,7 @@ func (m *Manager) generateTitle(session *Session) string {
 			return content
 		}
 	}
-	
+
 	// Fallback to timestamp
 	return fmt.Sprintf("Session %s", session.CreatedAt.Format("Jan 02 15:04"))
 }

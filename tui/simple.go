@@ -21,22 +21,22 @@ type SimpleModel struct {
 	llmClient llm.Client
 	provider  string
 	model     string
-	
+
 	// UI components
 	viewport viewport.Model
 	textarea textarea.Model
 	spinner  spinner.Model
-	
+
 	// State
 	messages     []Message
 	isProcessing bool
 	width        int
 	height       int
 	ready        bool
-	
+
 	// Tool tracking
-	toolCount    int
-	activeTools  []string
+	toolCount   int
+	activeTools []string
 }
 
 // Message represents a chat message
@@ -54,14 +54,14 @@ func NewSimple(llmClient llm.Client, agentInstance agent.Agent, provider, model 
 	ta.Focus()
 	ta.CharLimit = 0
 	ta.ShowLineNumbers = false
-	
+
 	// Remove special key bindings to keep it simple
 	ta.KeyMap.InsertNewline.SetEnabled(false) // Enter sends message
-	
+
 	// Create spinner
 	s := spinner.New(spinner.WithSpinner(spinner.Line))
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("86"))
-	
+
 	return &SimpleModel{
 		agent:     agentInstance,
 		llmClient: llmClient,
@@ -88,7 +88,7 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		
+
 		if !m.ready {
 			// Initialize viewport
 			m.viewport = viewport.New(msg.Width, msg.Height-7) // Leave room for header and input
@@ -98,22 +98,22 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.viewport.Width = msg.Width
 			m.viewport.Height = msg.Height - 7
 		}
-		
+
 		// Update textarea width
 		m.textarea.SetWidth(msg.Width - 4) // Small margin
 		m.textarea.SetHeight(3)
-		
+
 	case tea.KeyMsg:
 		switch msg.Type {
 		case tea.KeyCtrlD:
 			return m, tea.Quit
-			
+
 		case tea.KeyCtrlL:
 			// Clear conversation
 			m.messages = []Message{}
 			m.viewport.SetContent("")
 			return m, nil
-			
+
 		case tea.KeyEnter:
 			if !m.isProcessing {
 				value := m.textarea.Value()
@@ -124,7 +124,7 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 			return m, tea.Batch(cmds...)
-			
+
 		case tea.KeyCtrlC:
 			if m.textarea.Value() != "" {
 				m.textarea.Reset()
@@ -132,7 +132,7 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, tea.Quit
 			}
 		}
-		
+
 	case responseMsg:
 		m.isProcessing = false
 		if msg.err != nil {
@@ -141,7 +141,7 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addMessage("assistant", msg.content)
 		}
 		m.updateView()
-		
+
 	case spinner.TickMsg:
 		if m.isProcessing {
 			s, cmd := m.spinner.Update(msg)
@@ -149,19 +149,19 @@ func (m SimpleModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmds = append(cmds, cmd)
 		}
 	}
-	
+
 	// Handle textarea input
 	if !m.isProcessing {
 		ta, cmd := m.textarea.Update(msg)
 		m.textarea = ta
 		cmds = append(cmds, cmd)
 	}
-	
+
 	// Handle viewport scrolling
 	vp, cmd := m.viewport.Update(msg)
 	m.viewport = vp
 	cmds = append(cmds, cmd)
-	
+
 	return m, tea.Batch(cmds...)
 }
 
@@ -169,26 +169,26 @@ func (m SimpleModel) View() string {
 	if !m.ready {
 		return "\nInitializing..."
 	}
-	
+
 	var b strings.Builder
-	
+
 	// Header
 	header := fmt.Sprintf("Simple Agent Go | Model: %s | Provider: %s\nLoaded %d tools | Commands: /help, /tools, /clear, /exit\n",
 		m.model, m.provider, m.toolCount)
 	b.WriteString(header)
 	b.WriteString(strings.Repeat("─", m.width) + "\n")
-	
+
 	// Conversation viewport
 	b.WriteString(m.viewport.View())
 	b.WriteString("\n")
-	
+
 	// Input area
 	if m.isProcessing {
 		b.WriteString(fmt.Sprintf("%s Processing...\n", m.spinner.View()))
 	} else {
 		b.WriteString(m.textarea.View())
 	}
-	
+
 	return b.String()
 }
 
@@ -215,7 +215,7 @@ func (m *SimpleModel) handleInput(input string) {
 			return
 		}
 	}
-	
+
 	// Check for shell commands
 	if strings.HasPrefix(input, "!") {
 		m.addMessage("user", input)
@@ -223,7 +223,7 @@ func (m *SimpleModel) handleInput(input string) {
 		m.updateView()
 		return
 	}
-	
+
 	// Regular message
 	m.addMessage("user", input)
 	m.updateView()
@@ -239,7 +239,7 @@ func (m *SimpleModel) addMessage(role, content string) {
 
 func (m *SimpleModel) updateView() {
 	var content strings.Builder
-	
+
 	for _, msg := range m.messages {
 		switch msg.Role {
 		case "user":
@@ -250,18 +250,18 @@ func (m *SimpleModel) updateView() {
 			content.WriteString(fmt.Sprintf("\n[%s]\n", msg.Content))
 		}
 	}
-	
+
 	m.viewport.SetContent(content.String())
 	m.viewport.GotoBottom()
 }
 
 func (m *SimpleModel) sendMessage(input string) tea.Cmd {
 	m.isProcessing = true
-	
+
 	return func() tea.Msg {
 		// Simulate API call for now
 		time.Sleep(2 * time.Second)
-		
+
 		// In real implementation, call m.agent.Query(ctx, input)
 		return responseMsg{
 			content: "This is a simulated response. Real agent integration coming soon!",

@@ -6,7 +6,7 @@ import "context"
 type ProgressReporter interface {
 	// ReportProgress reports a text progress update
 	ReportProgress(message string)
-	
+
 	// ReportProgressPercent reports progress with a percentage (0-1)
 	ReportProgressPercent(message string, percent float64)
 }

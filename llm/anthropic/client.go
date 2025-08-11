@@ -58,14 +58,14 @@ type AnthropicTool struct {
 
 // AnthropicResponse represents a response from Anthropic's API
 type AnthropicResponse struct {
-	ID           string                   `json:"id"`
-	Type         string                   `json:"type"`
-	Role         string                   `json:"role"`
-	Content      []AnthropicContentBlock  `json:"content"`
-	Model        string                   `json:"model"`
-	StopReason   string                   `json:"stop_reason"`
-	StopSequence string                   `json:"stop_sequence,omitempty"`
-	Usage        AnthropicUsage           `json:"usage"`
+	ID           string                  `json:"id"`
+	Type         string                  `json:"type"`
+	Role         string                  `json:"role"`
+	Content      []AnthropicContentBlock `json:"content"`
+	Model        string                  `json:"model"`
+	StopReason   string                  `json:"stop_reason"`
+	StopSequence string                  `json:"stop_sequence,omitempty"`
+	Usage        AnthropicUsage          `json:"usage"`
 }
 
 // AnthropicContentBlock represents a content block in the response
@@ -195,7 +195,7 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 
 	// Convert to standard format
 	response := c.convertResponse(&anthropicResp)
-	
+
 	// Debug log parsed response
 	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 		if len(response.Choices) > 0 && len(response.Choices[0].Message.ToolCalls) > 0 {
@@ -207,7 +207,7 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 			fmt.Fprintf(os.Stderr, "[Anthropic] No tool calls in response\n")
 		}
 	}
-	
+
 	return response, nil
 }
 
@@ -280,7 +280,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 					delta, _ := event["delta"].(map[string]interface{})
 					if text, ok := delta["text"].(string); ok {
 						currentMessage.WriteString(text)
-						
+
 						streamEvent := llm.StreamEvent{
 							ID:      event["id"].(string),
 							Object:  "chat.completion.chunk",
@@ -366,7 +366,7 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 		FirstID string `json:"first_id"`
 		LastID  string `json:"last_id"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
@@ -458,7 +458,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *AnthropicRequest {
 			// Handle tool calls
 			if len(msg.ToolCalls) > 0 {
 				var content []AnthropicContentBlock
-				
+
 				// Add text if present
 				if msg.Content != nil && *msg.Content != "" {
 					content = append(content, AnthropicContentBlock{

@@ -10,39 +10,39 @@ import (
 
 // Config contains agent configuration
 type Config struct {
-    SystemPrompt    string
-    MaxIterations   int
-    Temperature     float32
-    MaxTokens       int
-    Tools           []string
-    Verbose         bool
-    Timeout         time.Duration
-    MemorySize      int
-    StreamResponses bool
-    progressHandler func(ProgressEvent) // temporary storage for handler
-    // Feature flags
-    EnableLMStudioParser bool // Parse LM Studio channel-markup tool calls when true
+	SystemPrompt    string
+	MaxIterations   int
+	Temperature     float32
+	MaxTokens       int
+	Tools           []string
+	Verbose         bool
+	Timeout         time.Duration
+	MemorySize      int
+	StreamResponses bool
+	progressHandler func(ProgressEvent) // temporary storage for handler
+	// Feature flags
+	EnableLMStudioParser bool // Parse LM Studio channel-markup tool calls when true
 }
 
 // DefaultConfig returns a default agent configuration
 func DefaultConfig() Config {
-    return Config{
-        SystemPrompt:    defaultSystemPrompt,
-        MaxIterations:   10,
-        Temperature:     0.7,
-        MaxTokens:       2048,
-        Verbose:         false,
-        Timeout:         5 * time.Minute,
-        MemorySize:      100,
-        StreamResponses: true,
-        EnableLMStudioParser: false,
-    }
+	return Config{
+		SystemPrompt:         defaultSystemPrompt,
+		MaxIterations:        10,
+		Temperature:          0.7,
+		MaxTokens:            2048,
+		Verbose:              false,
+		Timeout:              5 * time.Minute,
+		MemorySize:           100,
+		StreamResponses:      true,
+		EnableLMStudioParser: false,
+	}
 }
 
 // Memory represents the agent's conversation memory
 type Memory struct {
-	Messages  []llm.Message
-	MaxSize   int
+	Messages   []llm.Message
+	MaxSize    int
 	TokenCount int
 }
 
@@ -76,7 +76,7 @@ const (
 	EventTypeToolResult   EventType = "tool_result"
 	EventTypeToolTimeout  EventType = "tool_timeout"
 	EventTypeToolCancel   EventType = "tool_cancel"
-	EventTypeThinking     EventType = "thinking"       // LLM is reasoning
+	EventTypeThinking     EventType = "thinking" // LLM is reasoning
 	EventTypeError        EventType = "error"
 	EventTypeComplete     EventType = "complete"
 )
@@ -129,7 +129,7 @@ type Agent interface {
 
 	// SetSystemPrompt updates the system prompt
 	SetSystemPrompt(prompt string)
-	
+
 	// SetMemory sets the conversation memory
 	SetMemory(messages []llm.Message)
 }

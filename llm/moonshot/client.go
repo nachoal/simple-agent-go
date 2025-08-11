@@ -28,11 +28,11 @@ type Client struct {
 // NewClient creates a new Moonshot client
 func NewClient(opts ...llm.ClientOption) (*Client, error) {
 	options := llm.ClientOptions{
-		BaseURL:    defaultBaseURL,
-		Timeout:    defaultTimeout,
-		MaxRetries: 3,
+		BaseURL:      defaultBaseURL,
+		Timeout:      defaultTimeout,
+		MaxRetries:   3,
 		DefaultModel: defaultModel,
-		Headers:    make(map[string]string),
+		Headers:      make(map[string]string),
 	}
 
 	// Apply options
@@ -173,11 +173,11 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 			Parent string `json:"parent"`
 		} `json:"data"`
 	}
-	
+
 	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
 		return nil, fmt.Errorf("failed to decode response: %w", err)
 	}
-	
+
 	// Convert to llm.Model format
 	models := make([]llm.Model, 0, len(response.Data))
 	for _, m := range response.Data {

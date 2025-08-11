@@ -20,7 +20,6 @@ type FileEditTool struct {
 	base.BaseTool
 }
 
-
 // Parameters returns the parameters struct
 func (t *FileEditTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -61,13 +60,13 @@ func (t *FileEditTool) Execute(ctx context.Context, params json.RawMessage) (str
 		if inputParams.OldString != "" {
 			return "Error: old_str must be empty when creating new file", nil
 		}
-		
+
 		// Create parent directories
 		dir := filepath.Dir(cleanPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return "Error editing file: " + err.Error(), nil
 		}
-		
+
 		// Write new file
 		if err := os.WriteFile(cleanPath, []byte(inputParams.NewString), 0644); err != nil {
 			return "Error editing file: " + err.Error(), nil
@@ -104,4 +103,3 @@ func (t *FileEditTool) Execute(ctx context.Context, params json.RawMessage) (str
 
 	return "OK", nil
 }
-

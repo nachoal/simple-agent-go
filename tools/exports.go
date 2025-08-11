@@ -4,7 +4,7 @@ import (
 	"net/http"
 	"os"
 	"time"
-	
+
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
@@ -31,7 +31,7 @@ func NewFileWriteTool() Tool {
 	}
 }
 
-// NewFileEditTool creates a new file edit tool  
+// NewFileEditTool creates a new file edit tool
 func NewFileEditTool() Tool {
 	return &FileEditTool{
 		BaseTool: base.BaseTool{
@@ -69,7 +69,7 @@ func NewShellTool() Tool {
 		"wc", "sort", "head", "tail", "awk", "sed", "cut",
 		"diff", "file", "which", "env", "printenv",
 	}
-	
+
 	return &ShellTool{
 		BaseTool: base.BaseTool{
 			ToolName: "shell",

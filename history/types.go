@@ -26,17 +26,17 @@ type Metadata struct {
 
 // Message represents a conversation message
 type Message struct {
-	Role       string      `json:"role"`
-	Content    *string     `json:"content,omitempty"`
-	ToolCalls  []ToolCall  `json:"tool_calls,omitempty"`
-	ToolCallID string      `json:"tool_call_id,omitempty"`
-	Timestamp  time.Time   `json:"timestamp"`
+	Role       string     `json:"role"`
+	Content    *string    `json:"content,omitempty"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+	Timestamp  time.Time  `json:"timestamp"`
 }
 
 // ToolCall represents a tool invocation
 type ToolCall struct {
-	ID       string     `json:"id"`
-	Type     string     `json:"type"`
+	ID       string       `json:"id"`
+	Type     string       `json:"type"`
 	Function FunctionCall `json:"function"`
 }
 

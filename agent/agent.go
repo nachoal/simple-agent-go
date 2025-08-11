@@ -1,18 +1,18 @@
 package agent
 
 import (
-    "context"
-    "encoding/json"
-    "fmt"
-    "math/rand"
-    "os"
-    "regexp"
-    "sort"
-    "strings"
-    "sync"
-    "sync/atomic"
-    "time"
-    "unicode"
+	"context"
+	"encoding/json"
+	"fmt"
+	"math/rand"
+	"os"
+	"regexp"
+	"sort"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+	"unicode"
 
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools"
@@ -40,7 +40,7 @@ type agent struct {
 // New creates a new agent
 func New(client llm.Client, opts ...Option) Agent {
 	config := DefaultConfig()
-	
+
 	// Apply options
 	for _, opt := range opts {
 		opt(&config)
@@ -65,7 +65,7 @@ func New(client llm.Client, opts ...Option) Agent {
 		if toolInfo != "" {
 			enhancedPrompt = config.SystemPrompt + "\n\n" + toolInfo
 		}
-		
+
 		a.memory.Messages = append(a.memory.Messages, llm.Message{
 			Role:    llm.RoleSystem,
 			Content: llm.StringPtr(enhancedPrompt),
@@ -106,7 +106,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	var totalUsage llm.Usage
 	var allToolResults []tools.ToolResult
 	toolChoice := "auto"
-	
+
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		// Emit progress event for iteration
 		a.emitProgress(ProgressEvent{
@@ -114,11 +114,11 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			Iteration: iteration + 1,
 			Max:       a.config.MaxIterations,
 		})
-		
-        // Keep allowing tool calls to enable multi-tool chains.
-        // We'll rely on max iterations and model behavior to avoid loops.
-        // toolChoice remains "auto" unless explicitly changed elsewhere.
-		
+
+		// Keep allowing tool calls to enable multi-tool chains.
+		// We'll rely on max iterations and model behavior to avoid loops.
+		// toolChoice remains "auto" unless explicitly changed elsewhere.
+
 		// Create chat request
 		request := &llm.ChatRequest{
 			Messages:    a.getMessages(),
@@ -164,7 +164,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 				fmt.Fprintf(os.Stderr, "\n[Agent] No native tool calls found, attempting to parse from content:\n%s\n", *message.Content)
 			}
-			
+
 			// Try to parse tool calls from content
 			toolCalls := a.parseToolCallsFromContent(*message.Content)
 			if len(toolCalls) > 0 {
@@ -197,7 +197,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 				Type:      ProgressEventToolCallsStart,
 				ToolCount: len(message.ToolCalls),
 			})
-			
+
 			// Execute tools
 			toolCalls := make([]tools.ToolCall, len(message.ToolCalls))
 			for i, tc := range message.ToolCalls {
@@ -206,7 +206,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				}
-				
+
 				// Emit progress event for individual tool call
 				a.emitProgress(ProgressEvent{
 					Type:     ProgressEventToolCall,
@@ -244,7 +244,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			a.emitProgress(ProgressEvent{
 				Type: ProgressEventNoTools,
 			})
-			
+
 			// Model returned empty content, prompt for response
 			a.addMessage(llm.Message{
 				Role:    llm.RoleUser,
@@ -326,7 +326,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			for event := range streamEvents {
 				if len(event.Choices) > 0 {
 					choice := event.Choices[0]
-					
+
 					// Handle content delta
 					if choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content != "" {
 						fullContent.WriteString(*choice.Delta.Content)
@@ -375,7 +375,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 					if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
 						args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
 					}
-					
+
 					// Send tool start event
 					events <- StreamEvent{
 						Type: EventTypeToolStart,
@@ -453,7 +453,7 @@ func (a *agent) Clear() {
 		if toolInfo != "" {
 			enhancedPrompt = a.config.SystemPrompt + "\n\n" + toolInfo
 		}
-		
+
 		a.memory.Messages = append(a.memory.Messages, llm.Message{
 			Role:    llm.RoleSystem,
 			Content: llm.StringPtr(enhancedPrompt),
@@ -591,17 +591,17 @@ func WithMemorySize(size int) Option {
 
 // WithProgressHandler sets a progress handler function
 func WithProgressHandler(handler func(ProgressEvent)) Option {
-    return func(c *Config) {
-        // Store in a temporary field that we'll extract
-        c.progressHandler = handler
-    }
+	return func(c *Config) {
+		// Store in a temporary field that we'll extract
+		c.progressHandler = handler
+	}
 }
 
 // WithLMStudioParser enables/disables parsing of LM Studio channel-markup tool calls
 func WithLMStudioParser(enabled bool) Option {
-    return func(c *Config) {
-        c.EnableLMStudioParser = enabled
-    }
+	return func(c *Config) {
+		c.EnableLMStudioParser = enabled
+	}
 }
 
 // emitProgress emits a progress event if a handler is set
@@ -616,31 +616,31 @@ func (a *agent) getToolListForPrompt() string {
 	if a.toolRegistry == nil {
 		return ""
 	}
-	
+
 	var toolInfo strings.Builder
 	toolInfo.WriteString("Available tools:\n\n")
-	
+
 	// Get all tool names
 	toolNames := a.toolRegistry.List()
-	
+
 	// Sort for consistent ordering
 	sort.Strings(toolNames)
-	
+
 	for _, name := range toolNames {
 		tool, err := a.toolRegistry.Get(name)
 		if err != nil {
 			continue
 		}
-		
+
 		// Get tool schema to extract parameter information
 		schema, err := a.toolRegistry.GetSchema(name)
 		if err != nil {
 			continue
 		}
-		
+
 		toolInfo.WriteString(fmt.Sprintf("%s:\n", name))
 		toolInfo.WriteString(fmt.Sprintf("Description: %s\n", tool.Description()))
-		
+
 		// Extract parameter information from schema
 		if fn, ok := schema["function"].(map[string]interface{}); ok {
 			if params, ok := fn["parameters"].(map[string]interface{}); ok {
@@ -662,14 +662,14 @@ func (a *agent) getToolListForPrompt() string {
 				}
 			}
 		}
-		
+
 		toolInfo.WriteString("\n")
 	}
-	
+
 	toolInfo.WriteString("When you need to use a tool, respond with a JSON object in this format:\n")
 	toolInfo.WriteString(`{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}`)
 	toolInfo.WriteString("\n\nDo not include any other text when calling a tool, just the JSON object.")
-	
+
 	return toolInfo.String()
 }
 
@@ -677,10 +677,10 @@ func (a *agent) getToolListForPrompt() string {
 func (a *agent) SetMemory(messages []llm.Message) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	
+
 	a.memory.Messages = make([]llm.Message, len(messages))
 	copy(a.memory.Messages, messages)
-	
+
 	// Update token count if needed
 	// TODO: Implement token counting
 	a.memory.TokenCount = 0
@@ -689,97 +689,97 @@ func (a *agent) SetMemory(messages []llm.Message) {
 // parseToolCallsFromContent attempts to parse tool calls from content
 // This is for compatibility with providers that return tool calls in content
 func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
-    var toolCalls []llm.ToolCall
-    
-    // 0) LM Studio / channel-markup compatibility (gated by config)
-    // Example: "<|start|>assistant<|channel|>commentary to=functions.google_search <|constrain|>json<|message|>{\"input\":\"Tunguska incident\"}"
-    // Extract tool name after "to=functions." and JSON after "<|message|>"
-    if a.config.EnableLMStudioParser && strings.Contains(content, "to=functions.") && strings.Contains(content, "<|message|>") {
-        // Tool name
-        name := ""
-        if i := strings.Index(content, "to=functions."); i >= 0 {
-            start := i + len("to=functions.")
-            // read until whitespace
-            j := start
-            for j < len(content) && !unicode.IsSpace(rune(content[j])) {
-                j++
-            }
-            if j > start {
-                name = content[start:j]
-            }
-        }
+	var toolCalls []llm.ToolCall
 
-        // JSON arguments after <|message|>
-        argsJSON := ""
-        if k := strings.Index(content, "<|message|>"); k >= 0 {
-            payload := strings.TrimSpace(content[k+len("<|message|>"):])
+	// 0) LM Studio / channel-markup compatibility (gated by config)
+	// Example: "<|start|>assistant<|channel|>commentary to=functions.google_search <|constrain|>json<|message|>{\"input\":\"Tunguska incident\"}"
+	// Extract tool name after "to=functions." and JSON after "<|message|>"
+	if a.config.EnableLMStudioParser && strings.Contains(content, "to=functions.") && strings.Contains(content, "<|message|>") {
+		// Tool name
+		name := ""
+		if i := strings.Index(content, "to=functions."); i >= 0 {
+			start := i + len("to=functions.")
+			// read until whitespace
+			j := start
+			for j < len(content) && !unicode.IsSpace(rune(content[j])) {
+				j++
+			}
+			if j > start {
+				name = content[start:j]
+			}
+		}
 
-            // Try to extract first balanced JSON object
-            // Simple brace-balancing scanner
-            depth := 0
-            started := false
-            var b strings.Builder
-            for _, ch := range payload {
-                if !started {
-                    if ch == '{' {
-                        started = true
-                        depth = 1
-                        b.WriteRune(ch)
-                    }
-                    continue
-                } else {
-                    b.WriteRune(ch)
-                    if ch == '{' {
-                        depth++
-                    } else if ch == '}' {
-                        depth--
-                        if depth == 0 {
-                            break
-                        }
-                    }
-                }
-            }
-            if started {
-                argsJSON = b.String()
-            }
-        }
+		// JSON arguments after <|message|>
+		argsJSON := ""
+		if k := strings.Index(content, "<|message|>"); k >= 0 {
+			payload := strings.TrimSpace(content[k+len("<|message|>"):])
 
-        if name != "" && argsJSON != "" {
-            // Validate JSON
-            var tmp interface{}
-            if json.Unmarshal([]byte(argsJSON), &tmp) == nil {
-                id := fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
-                toolCalls = append(toolCalls, llm.ToolCall{
-                    ID:   id,
-                    Type: "function",
-                    Function: llm.FunctionCall{
-                        Name:      name,
-                        Arguments: json.RawMessage(argsJSON),
-                    },
-                })
-                return toolCalls
-            }
-        }
-    }
+			// Try to extract first balanced JSON object
+			// Simple brace-balancing scanner
+			depth := 0
+			started := false
+			var b strings.Builder
+			for _, ch := range payload {
+				if !started {
+					if ch == '{' {
+						started = true
+						depth = 1
+						b.WriteRune(ch)
+					}
+					continue
+				} else {
+					b.WriteRune(ch)
+					if ch == '{' {
+						depth++
+					} else if ch == '}' {
+						depth--
+						if depth == 0 {
+							break
+						}
+					}
+				}
+			}
+			if started {
+				argsJSON = b.String()
+			}
+		}
 
-    // Try to parse as single JSON object
-    var singleCall struct {
-        Name      string          `json:"name"`
-        Arguments json.RawMessage `json:"arguments"`
-        ID        string          `json:"id,omitempty"`
+		if name != "" && argsJSON != "" {
+			// Validate JSON
+			var tmp interface{}
+			if json.Unmarshal([]byte(argsJSON), &tmp) == nil {
+				id := fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+				toolCalls = append(toolCalls, llm.ToolCall{
+					ID:   id,
+					Type: "function",
+					Function: llm.FunctionCall{
+						Name:      name,
+						Arguments: json.RawMessage(argsJSON),
+					},
+				})
+				return toolCalls
+			}
+		}
 	}
-	
+
+	// Try to parse as single JSON object
+	var singleCall struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		ID        string          `json:"id,omitempty"`
+	}
+
 	content = strings.TrimSpace(content)
 	if err := json.Unmarshal([]byte(content), &singleCall); err == nil && singleCall.Name != "" {
 		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 			fmt.Fprintf(os.Stderr, "[Agent] Successfully parsed single JSON tool call\n")
 		}
-		
+
 		id := singleCall.ID
 		if id == "" {
 			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
 		}
-		
+
 		toolCalls = append(toolCalls, llm.ToolCall{
 			ID:   id,
 			Type: "function",
@@ -792,15 +792,15 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 	} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && err != nil {
 		fmt.Fprintf(os.Stderr, "[Agent] Failed to parse as single JSON: %v\n", err)
 	}
-	
+
 	// Try multiple JSON objects with regex
 	jsonPattern := regexp.MustCompile(`\{"name":\s*"([^"]+)",\s*"arguments":\s*(\{[^}]*\})(?:,\s*"id":\s*"([^"]+)")?\}`)
 	matches := jsonPattern.FindAllStringSubmatch(content, -1)
-	
+
 	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 		fmt.Fprintf(os.Stderr, "[Agent] Regex pattern found %d matches\n", len(matches))
 	}
-	
+
 	for _, match := range matches {
 		name := match[1]
 		args := json.RawMessage(match[2])
@@ -811,11 +811,11 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 		if id == "" {
 			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
 		}
-		
+
 		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 			fmt.Fprintf(os.Stderr, "[Agent] Regex match found tool: %s with args: %s\n", name, string(args))
 		}
-		
+
 		toolCalls = append(toolCalls, llm.ToolCall{
 			ID:   id,
 			Type: "function",
@@ -825,7 +825,7 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 			},
 		})
 	}
-	
+
 	return toolCalls
 }
 
@@ -838,23 +838,23 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 		wg.Add(1)
 		go func(idx int, tc tools.ToolCall) {
 			defer wg.Done()
-			
+
 			// Generate unique ID if not present
 			if tc.ID == "" {
 				tc.ID = generateToolID()
 			}
-			
+
 			// Parse arguments for display
 			var args map[string]interface{}
 			if err := json.Unmarshal(tc.Arguments, &args); err != nil {
 				args = map[string]interface{}{"raw": string(tc.Arguments)}
 			}
-			
+
 			// Print to stderr in query mode (no event channel)
 			if eventChan == nil {
 				fmt.Fprintf(os.Stderr, "🔧 Calling tool: %s\n", tc.Name)
 			}
-			
+
 			// Emit tool start event if channel provided
 			if eventChan != nil {
 				if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
@@ -874,18 +874,18 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 					return
 				}
 			}
-			
+
 			// Execute the tool
 			startTime := time.Now()
 			result := a.toolRegistry.ExecuteToolCall(ctx, tc)
 			duration := time.Since(startTime)
 			results[idx] = result
-			
+
 			// Print completion in query mode
 			if eventChan == nil {
 				fmt.Fprintf(os.Stderr, "🔧 %s completed in %v\n", tc.Name, duration)
 			}
-			
+
 			// Emit tool result event if channel provided
 			if eventChan != nil {
 				eventType := EventTypeToolResult
@@ -893,7 +893,7 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 					// Could distinguish between timeout/cancel/error here
 					eventType = EventTypeToolResult
 				}
-				
+
 				select {
 				case eventChan <- StreamEvent{
 					Type: eventType,

@@ -64,4 +64,3 @@ type ToolResult struct {
 	Result string `json:"result"`
 	Error  error  `json:"error,omitempty"`
 }
-

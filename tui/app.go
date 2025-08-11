@@ -262,7 +262,7 @@ func (m *Model) addMessage(msg ChatMessage) {
 
 func (m *Model) updateChatView() {
 	stylesInst := styles.NewStyles(m.theme)
-	
+
 	var content strings.Builder
 	for _, msg := range m.messages {
 		// Render role
@@ -304,7 +304,7 @@ func (m *Model) updateChatView() {
 
 func (m *Model) updateToolsView() {
 	stylesInst := styles.NewStyles(m.theme)
-	
+
 	var content strings.Builder
 	content.WriteString(stylesInst.Title.Render("Active Tools"))
 	content.WriteString("\n\n")
@@ -358,7 +358,7 @@ func (m *Model) sendMessage(input string) tea.Cmd {
 
 	return func() tea.Msg {
 		ctx := context.Background()
-		
+
 		// Use streaming if available
 		if m.agent != nil {
 			events, err := m.agent.QueryStream(ctx, input)
@@ -416,7 +416,7 @@ func (m Model) renderHeader(s *styles.Styles) string {
 
 	left := s.Title.Render(title)
 	right := s.Label.Render(status)
-	
+
 	gap := m.width - lipgloss.Width(left) - lipgloss.Width(right) - 4
 	if gap < 0 {
 		gap = 0

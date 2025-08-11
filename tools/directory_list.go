@@ -20,7 +20,6 @@ type DirectoryListTool struct {
 	base.BaseTool
 }
 
-
 // Parameters returns the parameters struct
 func (t *DirectoryListTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -38,13 +37,13 @@ func (t *DirectoryListTool) Execute(ctx context.Context, params json.RawMessage)
 	var inputParams struct {
 		Path string `json:"path,omitempty"`
 	}
-	
+
 	// Handle nil or empty input by defaulting to empty JSON object
 	input := strings.TrimSpace(args.Input)
 	if input == "" {
 		input = "{}"
 	}
-	
+
 	if err := json.Unmarshal([]byte(input), &inputParams); err != nil {
 		return "Error parsing input: " + err.Error() + ". Input must be JSON. Example: {\"path\": \"directory\"} or {}", nil
 	}
@@ -64,49 +63,48 @@ func (t *DirectoryListTool) Execute(ctx context.Context, params json.RawMessage)
 	if err != nil {
 		return "Error listing directory: " + err.Error(), nil
 	}
-	
+
 	// Also include files in the base directory
 	basePattern := filepath.Join(cleanPath, "*")
 	baseMatches, err := filepath.Glob(basePattern)
 	if err != nil {
 		return "Error listing directory: " + err.Error(), nil
 	}
-	
+
 	// Combine and deduplicate
 	allMatches := append(matches, baseMatches...)
 	seen := make(map[string]bool)
 	var entries []string
-	
+
 	for _, match := range allMatches {
 		if seen[match] {
 			continue
 		}
 		seen[match] = true
-		
+
 		// Skip . and .. entries (Ruby behavior)
 		base := filepath.Base(match)
 		if base == "." || base == ".." {
 			continue
 		}
-		
+
 		// Check if it's a directory and add trailing slash
 		info, err := os.Stat(match)
 		if err == nil && info.IsDir() {
-			entries = append(entries, match + "/")
+			entries = append(entries, match+"/")
 		} else {
 			entries = append(entries, match)
 		}
 	}
-	
+
 	// Sort entries (Ruby behavior)
 	sort.Strings(entries)
-	
+
 	// Return as JSON array
 	result, err := json.Marshal(entries)
 	if err != nil {
 		return "Error listing directory: " + err.Error(), nil
 	}
-	
+
 	return string(result), nil
 }
-

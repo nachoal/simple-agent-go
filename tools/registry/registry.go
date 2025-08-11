@@ -90,7 +90,7 @@ func (r *Registry) GetAllSchemas() []map[string]interface{} {
 	defer r.mu.RUnlock()
 
 	schemas := make([]map[string]interface{}, 0, len(r.tools))
-	
+
 	for name := range r.tools {
 		if schema, err := r.GetSchema(name); err == nil {
 			schemas = append(schemas, schema)

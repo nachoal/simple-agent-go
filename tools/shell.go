@@ -25,7 +25,6 @@ type ShellTool struct {
 	allowedCommands []string
 }
 
-
 // Parameters returns the parameters struct
 func (t *ShellTool) Parameters() interface{} {
 	return &base.GenericParams{}
@@ -52,7 +51,7 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 		Timeout    int      `json:"timeout,omitempty"`
 		Env        []string `json:"env,omitempty"`
 	}
-	
+
 	if err := json.Unmarshal([]byte(args.Input), &cmdParams); err == nil && cmdParams.Command != "" {
 		// Successfully parsed as JSON
 		command = cmdParams.Command
@@ -122,11 +121,11 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 	// Build result
 	result := fmt.Sprintf("Command: %s\n", command)
 	result += fmt.Sprintf("Duration: %v\n", duration)
-	
+
 	if workingDir != "" {
 		result += fmt.Sprintf("Working Directory: %s\n", workingDir)
 	}
-	
+
 	result += "\n"
 
 	// Add stdout
@@ -152,7 +151,7 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 		if cmdCtx.Err() == context.DeadlineExceeded {
 			return result + fmt.Sprintf("\nCommand timed out after %d seconds", timeout), nil
 		}
-		
+
 		if exitErr, ok := err.(*exec.ExitError); ok {
 			result += fmt.Sprintf("\nExit Code: %d", exitErr.ExitCode())
 		} else {
@@ -181,4 +180,3 @@ func (t *ShellTool) isCommandAllowed(cmd string) bool {
 	}
 	return false
 }
-
