@@ -34,6 +34,8 @@ type Model struct {
 	Parent      string   `json:"parent,omitempty"`
 	MaxTokens   int      `json:"max_tokens,omitempty"`
 	Description string   `json:"description,omitempty"`
+	// SupportsVision indicates the model can process image inputs
+	SupportsVision bool `json:"supports_vision,omitempty"`
 }
 
 // StreamReader provides a reader interface for streaming responses
