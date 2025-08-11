@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -228,7 +229,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 			// Parse SSE event
 			if strings.HasPrefix(line, "data: ") {
 				data := strings.TrimPrefix(line, "data: ")
-				
+
 				// Check for end of stream
 				if data == "[DONE]" {
 					return
@@ -280,10 +281,20 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 		return nil, fmt.Errorf("failed to parse response: %w", err)
 	}
 
-	// Set OwnedBy for local models if not provided
+	// Set OwnedBy and vision flag for known vision-capable IDs
 	for i := range response.Data {
 		if response.Data[i].OwnedBy == "" {
 			response.Data[i].OwnedBy = "local"
+		}
+		if isLMStudioVisionModel(response.Data[i].ID) {
+			response.Data[i].SupportsVision = true
+			if !strings.Contains(strings.ToLower(response.Data[i].Description), "vision") {
+				if response.Data[i].Description == "" {
+					response.Data[i].Description = "Vision-capable"
+				} else {
+					response.Data[i].Description = response.Data[i].Description + " · Vision"
+				}
+			}
 		}
 	}
 
@@ -322,3 +333,217 @@ func (c *Client) setHeaders(req *http.Request) {
 	}
 }
 
+// isLMStudioVisionModel marks common LM Studio vision models by ID
+func isLMStudioVisionModel(id string) bool {
+	n := strings.ToLower(id)
+	switch {
+	case strings.Contains(n, "gemma-3"), // Google Gemma 3 vision
+		strings.Contains(n, "pixtral"), // Mistral Pixtral
+		strings.Contains(n, "llava"),
+		strings.Contains(n, "bakllava"),
+		strings.Contains(n, "moondream"),
+		strings.Contains(n, "-vision"):
+		return true
+	default:
+		return false
+	}
+}
+
+// --- Multimodal helpers (OpenAI-compatible content array) ---
+
+type lmContentPart struct {
+	Type     string      `json:"type"`
+	Text     string      `json:"text,omitempty"`
+	ImageURL *lmImageURL `json:"image_url,omitempty"`
+}
+
+type lmImageURL struct {
+	URL string `json:"url"`
+}
+
+type lmMessage struct {
+	Role    string          `json:"role"`
+	Content []lmContentPart `json:"content"`
+}
+
+type lmChatReq struct {
+	Model       string      `json:"model"`
+	Messages    []lmMessage `json:"messages"`
+	MaxTokens   int         `json:"max_tokens,omitempty"`
+	Temperature float64     `json:"temperature,omitempty"`
+	Stream      bool        `json:"stream,omitempty"`
+}
+
+// encodeImageToDataURL converts an image to data URL format
+func (c *Client) encodeImageToDataURL(imagePath string) (string, error) {
+	data, err := os.ReadFile(imagePath)
+	if err != nil {
+		return "", fmt.Errorf("read image: %w", err)
+	}
+	mime := "image/jpeg"
+	if strings.HasSuffix(strings.ToLower(imagePath), ".png") {
+		mime = "image/png"
+	} else if strings.HasSuffix(strings.ToLower(imagePath), ".gif") {
+		mime = "image/gif"
+	} else if strings.HasSuffix(strings.ToLower(imagePath), ".webp") {
+		mime = "image/webp"
+	}
+	b64 := base64.StdEncoding.EncodeToString(data)
+	return fmt.Sprintf("data:%s;base64,%s", mime, b64), nil
+}
+
+// ChatWithImages sends a prompt + images using LM Studio's OpenAI-compatible API
+func (c *Client) ChatWithImages(prompt string, imagePaths []string, opts map[string]interface{}) (string, error) {
+	// Build content array
+	parts := []lmContentPart{{Type: "text", Text: prompt}}
+	for _, p := range imagePaths {
+		var url string
+		if strings.HasPrefix(strings.ToLower(p), "data:image/") {
+			url = p
+		} else {
+			var err error
+			url, err = c.encodeImageToDataURL(p)
+			if err != nil {
+				return "", err
+			}
+		}
+		parts = append(parts, lmContentPart{Type: "image_url", ImageURL: &lmImageURL{URL: url}})
+	}
+
+	req := lmChatReq{
+		Model:    c.options.DefaultModel,
+		Messages: []lmMessage{{Role: "user", Content: parts}},
+	}
+	// Lightweight handling of common opts
+	if v, ok := opts["max_tokens"].(int); ok {
+		req.MaxTokens = v
+	}
+	if v, ok := opts["temperature"].(float64); ok {
+		req.Temperature = v
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.options.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("LM Studio error: %s", string(b))
+	}
+
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return "", err
+	}
+	if len(out.Choices) > 0 {
+		return out.Choices[0].Message.Content, nil
+	}
+	return "", nil
+}
+
+// StreamChatWithImages streams chunks for prompt + images
+func (c *Client) StreamChatWithImages(prompt string, imagePaths []string, opts map[string]interface{}) (<-chan string, error) {
+	// Build content array
+	parts := []lmContentPart{{Type: "text", Text: prompt}}
+	for _, p := range imagePaths {
+		var url string
+		if strings.HasPrefix(strings.ToLower(p), "data:image/") {
+			url = p
+		} else {
+			var err error
+			url, err = c.encodeImageToDataURL(p)
+			if err != nil {
+				return nil, err
+			}
+		}
+		parts = append(parts, lmContentPart{Type: "image_url", ImageURL: &lmImageURL{URL: url}})
+	}
+
+	req := lmChatReq{
+		Model:    c.options.DefaultModel,
+		Messages: []lmMessage{{Role: "user", Content: parts}},
+		Stream:   true,
+	}
+	if v, ok := opts["max_tokens"].(int); ok {
+		req.MaxTokens = v
+	}
+	if v, ok := opts["temperature"].(float64); ok {
+		req.Temperature = v
+	}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.options.BaseURL+"/chat/completions", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("LM Studio error: %s", string(b))
+	}
+
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if line == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" {
+				return
+			}
+			var event struct {
+				Choices []struct {
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
+				} `json:"choices"`
+			}
+			if err := json.Unmarshal([]byte(data), &event); err != nil {
+				continue
+			}
+			if len(event.Choices) > 0 && event.Choices[0].Delta.Content != "" {
+				ch <- event.Choices[0].Delta.Content
+			}
+		}
+	}()
+	return ch, nil
+}
