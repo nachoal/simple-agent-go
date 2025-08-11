@@ -4,11 +4,13 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nachoal/simple-agent-go/llm"
@@ -36,9 +38,11 @@ type OllamaToolCall struct {
 
 // OllamaMessage represents a message in Ollama's format
 type OllamaMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content"`
-	ToolCalls  []OllamaToolCall `json:"tool_calls,omitempty"`
+	Role      string           `json:"role"`
+	Content   string           `json:"content"`
+	ToolCalls []OllamaToolCall `json:"tool_calls,omitempty"`
+	// Images holds base64-encoded images for vision-capable models
+	Images []string `json:"images,omitempty"`
 }
 
 // OllamaRequest represents a request to Ollama's API
@@ -53,15 +57,15 @@ type OllamaRequest struct {
 
 // OllamaResponse represents a response from Ollama's API
 type OllamaResponse struct {
-	Model           string         `json:"model"`
-	CreatedAt       time.Time      `json:"created_at"`
-	Message         OllamaMessage  `json:"message"`
-	Done            bool           `json:"done"`
-	TotalDuration   int64          `json:"total_duration,omitempty"`
-	LoadDuration    int64          `json:"load_duration,omitempty"`
-	PromptEvalCount int            `json:"prompt_eval_count,omitempty"`
-	EvalCount       int            `json:"eval_count,omitempty"`
-	EvalDuration    int64          `json:"eval_duration,omitempty"`
+	Model           string        `json:"model"`
+	CreatedAt       time.Time     `json:"created_at"`
+	Message         OllamaMessage `json:"message"`
+	Done            bool          `json:"done"`
+	TotalDuration   int64         `json:"total_duration,omitempty"`
+	LoadDuration    int64         `json:"load_duration,omitempty"`
+	PromptEvalCount int           `json:"prompt_eval_count,omitempty"`
+	EvalCount       int           `json:"eval_count,omitempty"`
+	EvalDuration    int64         `json:"eval_duration,omitempty"`
 }
 
 // OllamaStreamResponse for streaming
@@ -238,7 +242,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 			delta := &llm.Message{
 				Content: llm.StringPtr(streamResp.Message.Content),
 			}
-			
+
 			// Convert tool calls if present
 			if len(streamResp.Message.ToolCalls) > 0 {
 				for _, tc := range streamResp.Message.ToolCalls {
@@ -247,7 +251,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 					if err != nil {
 						args = []byte("{}")
 					}
-					
+
 					delta.ToolCalls = append(delta.ToolCalls, llm.ToolCall{
 						ID:   fmt.Sprintf("call_%d", time.Now().UnixNano()),
 						Type: "function",
@@ -258,7 +262,7 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 					})
 				}
 			}
-			
+
 			event := llm.StreamEvent{
 				ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
 				Object:  "chat.completion.chunk",
@@ -332,12 +336,18 @@ func (c *Client) ListModels(ctx context.Context) ([]llm.Model, error) {
 	// Convert to standard model format
 	models := make([]llm.Model, len(response.Models))
 	for i, model := range response.Models {
+		supportsVision := isOllamaVisionModel(model.Name)
+		desc := fmt.Sprintf("Local model (%s)", formatBytes(model.Size))
+		if supportsVision {
+			desc = desc + " · Vision"
+		}
 		models[i] = llm.Model{
-			ID:          model.Name,
-			Object:      "model",
-			Created:     model.ModifiedAt.Unix(),
-			OwnedBy:     "ollama",
-			Description: fmt.Sprintf("Local model (%s)", formatBytes(model.Size)),
+			ID:             model.Name,
+			Object:         "model",
+			Created:        model.ModifiedAt.Unix(),
+			OwnedBy:        "ollama",
+			Description:    desc,
+			SupportsVision: supportsVision,
 		}
 	}
 
@@ -394,12 +404,12 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 	for _, msg := range req.Messages {
 		role := string(msg.Role)
 		// Ollama uses "system", "user", "assistant", "tool"
-		
+
 		ollamaMsg := OllamaMessage{
 			Role:    role,
 			Content: llm.GetStringValue(msg.Content),
 		}
-		
+
 		// Convert tool calls if present
 		if len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
@@ -409,7 +419,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 					// If unmarshal fails, use raw string
 					args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
 				}
-				
+
 				ollamaMsg.ToolCalls = append(ollamaMsg.ToolCalls, OllamaToolCall{
 					Function: struct {
 						Name      string                 `json:"name"`
@@ -445,7 +455,7 @@ func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatRe
 		Role:    llm.RoleAssistant,
 		Content: llm.StringPtr(resp.Message.Content),
 	}
-	
+
 	// Convert tool calls if present
 	if len(resp.Message.ToolCalls) > 0 {
 		for _, tc := range resp.Message.ToolCalls {
@@ -454,7 +464,7 @@ func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatRe
 			if err != nil {
 				args = []byte("{}")
 			}
-			
+
 			message.ToolCalls = append(message.ToolCalls, llm.ToolCall{
 				ID:   fmt.Sprintf("call_%d", time.Now().UnixNano()),
 				Type: "function",
@@ -465,13 +475,13 @@ func (c *Client) convertResponse(resp *OllamaResponse, model string) *llm.ChatRe
 			})
 		}
 	}
-	
+
 	// Determine finish reason
 	finishReason := "stop"
 	if len(message.ToolCalls) > 0 {
 		finishReason = "tool_calls"
 	}
-	
+
 	return &llm.ChatResponse{
 		ID:      fmt.Sprintf("ollama-%d", time.Now().UnixNano()),
 		Object:  "chat.completion",
@@ -510,4 +520,173 @@ func formatBytes(bytes int64) string {
 	default:
 		return fmt.Sprintf("%d B", bytes)
 	}
+}
+
+// isOllamaVisionModel returns true if the given model name is likely vision-capable
+func isOllamaVisionModel(name string) bool {
+	n := strings.ToLower(name)
+	switch {
+	case strings.Contains(n, "llava"),
+		strings.Contains(n, "bakllava"),
+		strings.Contains(n, "moondream"),
+		strings.Contains(n, ":vision"),
+		strings.Contains(n, "-vision"):
+		return true
+	default:
+		return false
+	}
+}
+
+// --- Multimodal helpers ---
+
+// encodeImageBase64 reads a local image file and returns base64-encoded contents
+func (c *Client) encodeImageBase64(path string) (string, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", err
+	}
+	return base64.StdEncoding.EncodeToString(data), nil
+}
+
+// ChatWithImages sends a single-turn prompt with images using Ollama's /api/chat
+// It returns the full, accumulated text response.
+func (c *Client) ChatWithImages(prompt string, imagePaths []string, opts map[string]interface{}) (string, error) {
+	// Encode images
+	var imgs []string
+	for _, p := range imagePaths {
+		if strings.HasPrefix(strings.ToLower(p), "data:image/") {
+			// Extract base64 after comma
+			if idx := strings.Index(p, ","); idx != -1 && idx+1 < len(p) {
+				imgs = append(imgs, p[idx+1:])
+				continue
+			}
+		}
+		enc, err := c.encodeImageBase64(p)
+		if err != nil {
+			return "", fmt.Errorf("encode image %s: %w", p, err)
+		}
+		imgs = append(imgs, enc)
+	}
+
+	// Build request
+	req := &OllamaRequest{
+		Model:   c.options.DefaultModel,
+		Stream:  false,
+		Options: map[string]interface{}{},
+	}
+	if opts != nil {
+		for k, v := range opts {
+			req.Options[k] = v
+		}
+	}
+	req.Messages = []OllamaMessage{{
+		Role:    "user",
+		Content: prompt,
+		Images:  imgs,
+	}}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return "", err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.options.BaseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("Ollama error: %s", string(b))
+	}
+	var oResp OllamaResponse
+	if err := json.NewDecoder(resp.Body).Decode(&oResp); err != nil {
+		return "", err
+	}
+	return oResp.Message.Content, nil
+}
+
+// StreamChatWithImages streams chunked responses for image+text prompts
+func (c *Client) StreamChatWithImages(prompt string, imagePaths []string, opts map[string]interface{}) (<-chan string, error) {
+	// Encode images
+	var imgs []string
+	for _, p := range imagePaths {
+		if strings.HasPrefix(strings.ToLower(p), "data:image/") {
+			if idx := strings.Index(p, ","); idx != -1 && idx+1 < len(p) {
+				imgs = append(imgs, p[idx+1:])
+				continue
+			}
+		}
+		enc, err := c.encodeImageBase64(p)
+		if err != nil {
+			return nil, fmt.Errorf("encode image %s: %w", p, err)
+		}
+		imgs = append(imgs, enc)
+	}
+
+	// Build request
+	req := &OllamaRequest{
+		Model:   c.options.DefaultModel,
+		Stream:  true,
+		Options: map[string]interface{}{},
+	}
+	if opts != nil {
+		for k, v := range opts {
+			req.Options[k] = v
+		}
+	}
+	req.Messages = []OllamaMessage{{
+		Role:    "user",
+		Content: prompt,
+		Images:  imgs,
+	}}
+
+	body, err := json.Marshal(req)
+	if err != nil {
+		return nil, err
+	}
+
+	httpReq, err := http.NewRequest("POST", c.options.BaseURL+"/api/chat", bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	c.setHeaders(httpReq)
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := c.httpClient.Do(httpReq)
+	if err != nil {
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		defer resp.Body.Close()
+		b, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("Ollama error: %s", string(b))
+	}
+
+	ch := make(chan string)
+	go func() {
+		defer close(ch)
+		defer resp.Body.Close()
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			var sResp OllamaStreamResponse
+			if err := json.Unmarshal(scanner.Bytes(), &sResp); err != nil {
+				continue
+			}
+			if sResp.Message.Content != "" {
+				ch <- sResp.Message.Content
+			}
+			if sResp.Done {
+				return
+			}
+		}
+	}()
+	return ch, nil
 }
