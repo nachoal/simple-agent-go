@@ -72,6 +72,12 @@ type BorderedTUI struct {
 	tokenRe        *regexp.Regexp
 	prevInput      string
 	supportsVision bool
+
+	// Slash command autocomplete
+	suggestVisible bool
+	suggestItems   []commandEntry
+	suggestIndex   int
+	commands       []commandEntry
 }
 
 // ActiveTool represents a currently executing tool
@@ -217,6 +223,24 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		dataURLSeen:          make(map[string]struct{}),
 		tokenRe:              tokenRe,
 		prevInput:            "",
+		// Autocomplete init
+		suggestVisible: false,
+		suggestItems:   nil,
+		suggestIndex:   0,
+	}
+
+	// Define available slash commands for autocomplete
+	tui.commands = []commandEntry{
+		{name: "/help", desc: "Show this help"},
+		{name: "/tools", desc: "List available tools"},
+		{name: "/model", desc: "Change model interactively"},
+		{name: "/status", desc: "Show current model and provider"},
+		{name: "/system", desc: "Show system prompt"},
+		{name: "/verbose", desc: "Toggle verbose/debug mode"},
+		{name: "/clear", desc: "Clear chat history"},
+		{name: "/attachments", desc: "List attached images"},
+		{name: "/attach", desc: "Attach an image by path"},
+		{name: "/paste-image", desc: "Attach clipboard image (macOS)"},
 	}
 
 	tui.supportsVision = tui.computeVisionSupport()
@@ -285,6 +309,12 @@ type Attachment struct {
 	ID        int
 	Ref       string // path or data URL
 	IsDataURL bool
+}
+
+// commandEntry represents a slash command and its short description
+type commandEntry struct {
+	name string
+	desc string
 }
 
 // Helper functions for rendering messages to stdout with styling
@@ -477,6 +507,42 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyCtrlQ, tea.KeyEsc:
 			return m, tea.Quit
 
+		case tea.KeyUp:
+			if m.suggestVisible && len(m.suggestItems) > 0 {
+				if m.suggestIndex > 0 {
+					m.suggestIndex--
+				} else {
+					m.suggestIndex = len(m.suggestItems) - 1
+				}
+				return m, nil
+			}
+
+		case tea.KeyDown:
+			if m.suggestVisible && len(m.suggestItems) > 0 {
+				m.suggestIndex = (m.suggestIndex + 1) % len(m.suggestItems)
+				return m, nil
+			}
+
+		case tea.KeyTab:
+			if m.suggestVisible && len(m.suggestItems) > 0 {
+				selected := m.suggestItems[m.suggestIndex].name
+				// Replace current first token (from start to first space) with selected, append space
+				current := strings.TrimLeft(m.textarea.Value(), " ")
+				spaceIdx := strings.IndexAny(current, " \t\n")
+				if strings.HasPrefix(current, "/") {
+					if spaceIdx == -1 {
+						m.textarea.SetValue(selected + " ")
+					} else {
+						m.textarea.SetValue(selected + current[spaceIdx:])
+					}
+					m.suggestVisible = false
+					m.suggestItems = nil
+					m.suggestIndex = 0
+					m.adjustTextareaHeight()
+					return m, nil
+				}
+			}
+
 		case tea.KeyCtrlL:
 			// Clear history for agent context
 			m.historyForAgent = []llm.Message{}
@@ -489,12 +555,31 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				value := m.textarea.Value()
 				trimmed := strings.TrimSpace(value)
 				if trimmed != "" {
+					// If suggestions are visible for a slash command, Enter executes the selected command
+					if m.suggestVisible && len(m.suggestItems) > 0 && strings.HasPrefix(trimmed, "/") {
+						selected := m.suggestItems[m.suggestIndex].name
+						// Clear input and reset height
+						m.textarea.Reset()
+						m.textarea.SetHeight(1)
+						m.textarea.Blur()
+						// Hide suggestions
+						m.suggestVisible = false
+						m.suggestItems = nil
+						m.suggestIndex = 0
+						// Execute selected command
+						cmds = append(cmds, func() tea.Msg { return m.handleCommand(selected) })
+						return m, tea.Batch(cmds...)
+					}
 					// Commands take precedence: don't print as user, just execute
 					if strings.HasPrefix(trimmed, "/") {
 						// Clear input and reset height
 						m.textarea.Reset()
 						m.textarea.SetHeight(1)
 						m.textarea.Blur()
+						// Hide suggestions
+						m.suggestVisible = false
+						m.suggestItems = nil
+						m.suggestIndex = 0
 						// Execute command
 						cmds = append(cmds, func() tea.Msg { return m.handleCommand(trimmed) })
 						return m, tea.Batch(cmds...)
@@ -743,6 +828,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmds = append(cmds, tea.Printf("%s\n\n", renderCommandMessage("This model does not support vision.")))
 			}
 		}
+		// Update slash-command suggestions
+		m.updateSuggestions()
 	}
 
 	return m, tea.Batch(cmds...)
@@ -837,6 +924,31 @@ func (m BorderedTUI) View() string {
 		Render(promptedInput)
 	b.WriteString(styledInput)
 	b.WriteString("\n") // Ensure cursor moves to next line after box
+
+	// Render slash-command suggestions below input
+	if m.suggestVisible && len(m.suggestItems) > 0 {
+		max := len(m.suggestItems)
+		if max > 8 {
+			max = 8
+		}
+		// Simple styles
+		nameStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75"))
+		descStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
+		selStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("230")).Background(lipgloss.Color("62"))
+		for i := 0; i < max; i++ {
+			item := m.suggestItems[i]
+			line := fmt.Sprintf(" %s  %s", nameStyle.Render(item.name), descStyle.Render(item.desc))
+			if i == m.suggestIndex {
+				line = selStyle.Render(line)
+			}
+			b.WriteString(line)
+			b.WriteString("\n")
+		}
+		if len(m.suggestItems) > max {
+			b.WriteString(descStyle.Render(" … more"))
+			b.WriteString("\n")
+		}
+	}
 
 	return b.String()
 }
@@ -966,8 +1078,13 @@ Keyboard shortcuts:
 		// Show the current system prompt with tools
 		messages := m.agent.GetMemory()
 		if len(messages) > 0 && messages[0].Role == "system" {
+			// Safely dereference content pointer
+			sys := ""
+			if messages[0].Content != nil {
+				sys = *messages[0].Content
+			}
 			return borderedResponseMsg{
-				content:   fmt.Sprintf("**Current System Prompt (including tools):**\n\n%s", messages[0].Content),
+				content:   fmt.Sprintf("**Current System Prompt (including tools):**\n\n%s", sys),
 				isCommand: true,
 			}
 		}
@@ -1411,4 +1528,33 @@ func saveClipboardPNG() (string, error) {
 		return "", fmt.Errorf("pngpaste produced no file")
 	}
 	return path, nil
+}
+
+// updateSuggestions updates the slash-command suggestions based on current input
+func (m *BorderedTUI) updateSuggestions() {
+	cur := strings.TrimSpace(m.textarea.Value())
+	if !strings.HasPrefix(cur, "/") {
+		m.suggestVisible = false
+		m.suggestItems = nil
+		m.suggestIndex = 0
+		return
+	}
+	// Consider only the first token (before first whitespace)
+	token := cur
+	if i := strings.IndexAny(cur, " \t\n"); i != -1 {
+		token = cur[:i]
+	}
+	// Build filtered list
+	lower := strings.ToLower(token)
+	var list []commandEntry
+	for _, c := range m.commands {
+		if token == "/" || strings.HasPrefix(strings.ToLower(c.name), lower) {
+			list = append(list, c)
+		}
+	}
+	m.suggestItems = list
+	m.suggestVisible = len(list) > 0
+	if m.suggestIndex >= len(list) {
+		m.suggestIndex = 0
+	}
 }
