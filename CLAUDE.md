@@ -52,11 +52,11 @@ Simple Agent Go is a modern, high-performance implementation of the Simple Agent
    - **Schema Generation**: Struct tag-based (Go-idiomatic)
    - **Available Tools**:
      - `calculate.go` - Safe math evaluation
-     - `file_read.go` - Read file contents
-     - `file_write.go` - Write files safely
-     - `file_edit.go` - String replacement editing
+     - `read.go` - Read file contents
+     - `write.go` - Write files safely
+     - `edit.go` - String replacement editing
      - `directory_list.go` - List directory contents
-     - `shell.go` - Execute commands with safeguards
+     - `bash.go` - Execute commands with safeguards
      - `wikipedia.go` - Search Wikipedia (matches Ruby)
      - `google_search.go` - Web search via Custom Search API
    - **Registration**: Via `exports.go` pattern to avoid cycles
@@ -224,7 +224,7 @@ func CodingAssistant() agent.Config {
         SystemPrompt: `You are an expert Go developer...`,
         MaxIterations: 15,
         Temperature: 0.7,
-        Tools: []string{"file_read", "file_write", "shell"},
+        Tools: []string{"read", "write", "bash"},
     }
 }
 
@@ -383,10 +383,10 @@ ui:
 
 # Tool settings
 tools:
-  shell:
+  bash:
     allowed_commands: ["ls", "cat", "grep", "find"]
     timeout: 30s
-  file_write:
+  write:
     allowed_paths: ["./workspace", "/tmp"]
 
 # Provider settings

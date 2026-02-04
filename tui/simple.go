@@ -216,10 +216,10 @@ func (m *SimpleModel) handleInput(input string) {
 		}
 	}
 
-	// Check for shell commands
+	// Check for bash commands
 	if strings.HasPrefix(input, "!") {
 		m.addMessage("user", input)
-		m.addMessage("system", "Shell commands are not yet implemented")
+		m.addMessage("system", "Bash commands are not yet implemented")
 		m.updateView()
 		return
 	}

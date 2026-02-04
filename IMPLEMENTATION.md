@@ -88,16 +88,16 @@ type WikipediaParams struct {
 ```
 
 #### 3.1 File System Tools ✅
-- ✅ `FileReadTool` - Read files with proper error handling
-- ✅ `FileWriteTool` - Write files with safety checks
-- ✅ `FileEditTool` - Edit files with string replacement
+- ✅ `ReadTool` - Read files with proper error handling
+- ✅ `WriteTool` - Write files with safety checks
+- ✅ `EditTool` - Edit files with string replacement
 - ✅ `DirectoryListTool` - List directory contents with filtering
 
 #### 3.2 Information Tools ✅
 - ✅ `CalculateTool` - Safe math evaluation
 - ✅ `WikipediaTool` - Wikipedia search matching Ruby implementation
 - ✅ `GoogleSearchTool` - Web search using Custom Search API
-- ✅ `ShellTool` - Execute shell commands with safeguards
+- ✅ `BashTool` - Execute bash commands with safeguards
 
 #### 3.3 Tool Features ✅
 - ✅ Tool registration via exports.go pattern (avoiding import cycles)
@@ -247,7 +247,7 @@ Key decisions that made the TUI successful:
 
 ### Medium Priority
 1. **Plugin System**: Dynamic tool loading
-2. **Advanced Sandboxing**: Better security for shell commands
+2. **Advanced Sandboxing**: Better security for bash commands
 3. **Token Management**: Usage tracking and optimization
 
 ### Nice to Have

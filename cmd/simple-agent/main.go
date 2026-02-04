@@ -51,7 +51,7 @@ var (
 				os.Setenv("SIMPLE_AGENT_DEBUG", "true")
 			}
 
-			// Allow unrestricted shell commands if --yolo is set (DANGEROUS)
+			// Allow unrestricted bash commands if --yolo is set (DANGEROUS)
 			if yolo {
 				os.Setenv("SIMPLE_AGENT_YOLO", "true")
 			}

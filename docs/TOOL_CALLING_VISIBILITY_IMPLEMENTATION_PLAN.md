@@ -220,7 +220,7 @@ This document provides a straightforward implementation plan for adding tool cal
 - 2-3 example tools in `tools/`
 
 **Tasks:**
-1. Add progress support to a long-running tool (e.g., shell, download)
+1. Add progress support to a long-running tool (e.g., bash, download)
 2. Mark tools with sensitive arguments
 3. Test cancellation handling
 
@@ -255,7 +255,7 @@ This document provides a straightforward implementation plan for adding tool cal
    - Verify batch completion if they finish together
 
 3. **Long-Running Tools**
-   - Execute a shell command with sleep
+   - Execute a bash command with sleep
    - Verify duration counter updates
    - Test Ctrl+C cancellation
    - Verify timeout handling (30s default)
