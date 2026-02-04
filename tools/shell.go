@@ -23,6 +23,7 @@ type ShellParams = base.GenericParams
 type ShellTool struct {
 	base.BaseTool
 	allowedCommands []string
+	allowAll        bool
 }
 
 // Parameters returns the parameters struct
@@ -80,8 +81,8 @@ func (t *ShellTool) Execute(ctx context.Context, params json.RawMessage) (string
 	// Check if command is allowed (basic safety check)
 	// In production, implement more sophisticated sandboxing
 	baseCmd := strings.Fields(command)[0]
-	if !t.isCommandAllowed(baseCmd) {
-		return "", NewToolError("COMMAND_NOT_ALLOWED", "Command is not in the allowed list").
+	if !t.allowAll && !t.isCommandAllowed(baseCmd) {
+		return "", NewToolError("COMMAND_NOT_ALLOWED", "Command is not in the allowed list (start simple-agent with --yolo to allow any command)").
 			WithDetail("command", baseCmd).
 			WithDetail("allowed", strings.Join(t.allowedCommands, ", "))
 	}

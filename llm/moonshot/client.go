@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nachoal/simple-agent-go/llm"
@@ -66,9 +67,39 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 		request.Model = c.options.DefaultModel
 	}
 
-	// Set default temperature (Moonshot prefers lower temperature)
-	if request.Temperature == 0 {
-		request.Temperature = 0.3
+	// Model-specific defaults for Kimi K2.5
+	if isKimiK25Model(request.Model) {
+		if request.TopP == 0 {
+			request.TopP = 0.95
+		}
+		if isThinkingDisabled(request.ExtraBody) {
+			request.Temperature = 1.0
+			if request.ExtraBody == nil {
+				request.ExtraBody = map[string]interface{}{
+					"thinking": map[string]interface{}{
+						"type": "disabled",
+					},
+				}
+			}
+		} else {
+			request.Temperature = 1.0
+		}
+
+		// Moonshot requires reasoning_content when thinking is enabled and tool calls are present.
+		if !isThinkingDisabled(request.ExtraBody) {
+			for i := range request.Messages {
+				msg := &request.Messages[i]
+				if msg.Role == llm.RoleAssistant && len(msg.ToolCalls) > 0 && msg.ReasoningContent == nil {
+					empty := ""
+					msg.ReasoningContent = &empty
+				}
+			}
+		}
+	} else {
+		// Set default temperature (Moonshot prefers lower temperature)
+		if request.Temperature == 0 {
+			request.Temperature = 0.3
+		}
 	}
 
 	// Create request body
@@ -121,6 +152,30 @@ func (c *Client) Chat(ctx context.Context, request *llm.ChatRequest) (*llm.ChatR
 	}
 
 	return &response, nil
+}
+
+func isKimiK25Model(model string) bool {
+	model = strings.ToLower(strings.TrimSpace(model))
+	return strings.HasPrefix(model, "kimi-k2.5") || strings.Contains(model, "kimi-k2.5")
+}
+
+func isThinkingDisabled(extra map[string]interface{}) bool {
+	if extra == nil {
+		return false
+	}
+	thinkingVal, ok := extra["thinking"]
+	if !ok {
+		return false
+	}
+	thinkingMap, ok := thinkingVal.(map[string]interface{})
+	if !ok {
+		return false
+	}
+	typeVal, ok := thinkingMap["type"].(string)
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(typeVal, "disabled")
 }
 
 // ChatStream is not implemented for Moonshot yet

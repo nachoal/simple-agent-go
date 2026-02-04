@@ -12,8 +12,11 @@ import (
 type Config struct {
 	SystemPrompt    string
 	MaxIterations   int
+	MaxToolCalls    int
 	Temperature     float32
 	MaxTokens       int
+	TopP            float32
+	ExtraBody       map[string]interface{}
 	Tools           []string
 	Verbose         bool
 	Timeout         time.Duration
@@ -28,15 +31,25 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		SystemPrompt:         defaultSystemPrompt,
-		MaxIterations:        10,
+		MaxIterations:        1000,
+		MaxToolCalls:         1000,
 		Temperature:          0.7,
 		MaxTokens:            2048,
+		TopP:                 0,
+		ExtraBody:            nil,
 		Verbose:              false,
 		Timeout:              5 * time.Minute,
 		MemorySize:           100,
 		StreamResponses:      true,
 		EnableLMStudioParser: false,
 	}
+}
+
+// RequestParams controls per-request model parameters.
+type RequestParams struct {
+	Temperature float32
+	TopP        float32
+	ExtraBody   map[string]interface{}
 }
 
 // Memory represents the agent's conversation memory
@@ -132,6 +145,12 @@ type Agent interface {
 
 	// SetMemory sets the conversation memory
 	SetMemory(messages []llm.Message)
+
+	// SetRequestParams updates per-request model parameters
+	SetRequestParams(params RequestParams)
+
+	// GetRequestParams returns the current per-request model parameters
+	GetRequestParams() RequestParams
 }
 
 const defaultSystemPrompt = `You are an AI assistant that can leverage external tools to answer the user.

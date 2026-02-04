@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -37,6 +38,7 @@ type BorderedTUI struct {
 	typing          strings.Builder // For future streaming support
 	err             error
 	initialized     bool // Track if we've received the first WindowSizeMsg
+	yoloEnabled     bool
 
 	// Providers for model selection
 	providers     map[string]llm.Client
@@ -66,12 +68,14 @@ type BorderedTUI struct {
 	selector          *ModelSelector
 
 	// Image attachments
-	attachments    []Attachment
-	pathSeen       map[string]struct{}
-	dataURLSeen    map[string]struct{}
-	tokenRe        *regexp.Regexp
-	prevInput      string
-	supportsVision bool
+	attachments       []Attachment
+	pathSeen          map[string]struct{}
+	dataURLSeen       map[string]struct{}
+	tokenRe           *regexp.Regexp
+	prevInput         string
+	supportsVision    bool
+	thinkingEnabled   bool
+	baseRequestParams agent.RequestParams
 
 	// Slash command autocomplete
 	suggestVisible bool
@@ -150,6 +154,8 @@ func (cb *CircularBuffer) HasOverflow() bool {
 
 // NewBorderedTUI creates a new bordered TUI
 func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, model string) *BorderedTUI {
+	yoloEnabled := isYoloEnabled()
+
 	ta := textarea.New()
 	ta.Placeholder = ""
 	ta.ShowLineNumbers = false
@@ -195,9 +201,13 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // Same color as model
 
 	// Border style for input
+	borderColor := lipgloss.Color("15")
+	if yoloEnabled {
+		borderColor = lipgloss.Color("196") // Red indicator for unsafe shell mode
+	}
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("15"))
+		BorderForeground(borderColor)
 
 	tokenRe := regexp.MustCompile(`\[Image\s+#(\d+)\]`)
 
@@ -218,11 +228,13 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		lastRender:           time.Now(),
 		toolsUsedInLastQuery: make(map[string]time.Duration),
 		borderStyle:          borderStyle,
+		yoloEnabled:          yoloEnabled,
 		attachments:          []Attachment{},
 		pathSeen:             make(map[string]struct{}),
 		dataURLSeen:          make(map[string]struct{}),
 		tokenRe:              tokenRe,
 		prevInput:            "",
+		baseRequestParams:    agentInstance.GetRequestParams(),
 		// Autocomplete init
 		suggestVisible: false,
 		suggestItems:   nil,
@@ -236,6 +248,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		{name: "/model", desc: "Change model interactively"},
 		{name: "/status", desc: "Show current model and provider"},
 		{name: "/system", desc: "Show system prompt"},
+		{name: "/thinking", desc: "Toggle model thinking (if supported)"},
 		{name: "/verbose", desc: "Toggle verbose/debug mode"},
 		{name: "/clear", desc: "Clear chat history"},
 		{name: "/attachments", desc: "List attached images"},
@@ -244,6 +257,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	}
 
 	tui.supportsVision = tui.computeVisionSupport()
+	tui.applyModelDefaults()
 
 	return tui
 }
@@ -349,6 +363,11 @@ func renderToolMessage(content string) string {
 	return style.Render(content)
 }
 
+func isYoloEnabled() bool {
+	v := os.Getenv("SIMPLE_AGENT_YOLO")
+	return strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes")
+}
+
 // PrintHeader prints the TUI header to stdout before the TUI starts
 func PrintHeader(provider, model string) {
 	// Colors matching Python version
@@ -363,16 +382,23 @@ func PrintHeader(provider, model string) {
 		verboseIndicator = " | " + verboseStyle.Render("[VERBOSE]")
 	}
 
-	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s%s",
+	yoloIndicator := ""
+	if isYoloEnabled() {
+		yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true) // Red
+		yoloIndicator = " | " + yoloStyle.Render("[YOLO]")
+	}
+
+	header1 := fmt.Sprintf("%s | Model: %s | Provider: %s%s%s",
 		headerStyle.Render("Simple Agent Go"),
 		modelStyle.Render(model),
 		modelStyle.Render(provider),
-		verboseIndicator)
+		verboseIndicator,
+		yoloIndicator)
 
 	toolCount := len(registry.List())
 	header2 := fmt.Sprintf("%s | %s",
 		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
-		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /verbose, /clear, /exit"))
+		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /thinking, /verbose, /clear, /exit"))
 
 	fmt.Println(header1)
 	fmt.Println(header2)
@@ -465,11 +491,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if newClient, ok := m.providers[msg.provider]; ok {
 			m.llmClient = newClient
 			m.agent = agent.New(newClient,
-				agent.WithMaxIterations(10),
+				agent.WithMaxIterations(1000),
+				agent.WithMaxToolCalls(1000),
 				agent.WithTemperature(0.7),
 			)
+			m.baseRequestParams = m.agent.GetRequestParams()
 		}
 		m.supportsVision = m.computeVisionSupport()
+		m.applyModelDefaults()
 		if !m.supportsVision && len(m.attachments) > 0 {
 			m.attachments = nil
 			m.pathSeen = make(map[string]struct{})
@@ -567,7 +596,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.suggestItems = nil
 						m.suggestIndex = 0
 						// Execute selected command
-						cmds = append(cmds, func() tea.Msg { return m.handleCommand(selected) })
+						resp := m.handleCommand(selected)
+						cmds = append(cmds, func() tea.Msg { return resp })
 						return m, tea.Batch(cmds...)
 					}
 					// Commands take precedence: don't print as user, just execute
@@ -581,7 +611,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						m.suggestItems = nil
 						m.suggestIndex = 0
 						// Execute command
-						cmds = append(cmds, func() tea.Msg { return m.handleCommand(trimmed) })
+						resp := m.handleCommand(trimmed)
+						cmds = append(cmds, func() tea.Msg { return resp })
 						return m, tea.Batch(cmds...)
 					}
 
@@ -794,11 +825,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if newClient, ok := m.providers[msg.provider]; ok {
 			m.llmClient = newClient
 			m.agent = agent.New(newClient,
-				agent.WithMaxIterations(10),
+				agent.WithMaxIterations(1000),
+				agent.WithMaxToolCalls(1000),
 				agent.WithTemperature(0.7),
 			)
+			m.baseRequestParams = m.agent.GetRequestParams()
 		}
 		m.supportsVision = m.computeVisionSupport()
+		m.applyModelDefaults()
 		if !m.supportsVision && len(m.attachments) > 0 {
 			m.attachments = nil
 			m.pathSeen = make(map[string]struct{})
@@ -876,18 +910,34 @@ func (m BorderedTUI) View() string {
 	if m.supportsVision {
 		visionState = "On"
 	}
+	thinkingInfo := ""
+	thinkingState := ""
+	if supportsThinkingToggle(m.provider, m.model) {
+		thinkingState = "Off"
+		if m.thinkingEnabled {
+			thinkingState = "On"
+		}
+		thinkingInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Thinking:"), blueStyle.Render(thinkingState))
+	}
 	attachInfo := ""
 	if len(m.attachments) > 0 {
 		attachInfo = fmt.Sprintf(" %s %d", grayStyle.Render("| Attached:"), len(m.attachments))
 	}
-	modelInfo := fmt.Sprintf("%s %s %s %s %s %s%s",
+	yoloInfo := ""
+	if m.yoloEnabled {
+		yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+		yoloInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Shell:"), yoloStyle.Render("YOLO"))
+	}
+	modelInfo := fmt.Sprintf("%s %s %s %s %s %s%s%s%s",
 		grayStyle.Render("Model:"),
 		blueStyle.Render(m.model),
 		grayStyle.Render("| Provider:"),
 		blueStyle.Render(m.provider),
 		grayStyle.Render("| Vision:"),
 		blueStyle.Render(visionState),
-		attachInfo)
+		thinkingInfo,
+		attachInfo,
+		yoloInfo)
 
 	// Calculate the right alignment padding
 	// The border box width is m.width - 2, so we align to that
@@ -898,8 +948,14 @@ func (m BorderedTUI) View() string {
 
 	// Calculate the actual width of the rendered text (without ANSI codes)
 	plainTextWidth := len("Model: ") + len(m.model) + len(" | Provider: ") + len(m.provider) + len(" | Vision: ") + len(visionState)
+	if thinkingInfo != "" {
+		plainTextWidth += len(" | Thinking: ") + len(thinkingState)
+	}
 	if attachInfo != "" {
 		plainTextWidth += len(" | Attached: ") + len(fmt.Sprintf("%d", len(m.attachments)))
+	}
+	if yoloInfo != "" {
+		plainTextWidth += len(" | Shell: ") + len("YOLO")
 	}
 
 	// Right-align the model info to match the box width
@@ -1020,7 +1076,12 @@ func (m *BorderedTUI) sendMultimodal(input string) tea.Cmd {
 }
 
 func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
-	switch strings.ToLower(strings.TrimSpace(cmd)) {
+	trimmed := strings.TrimSpace(cmd)
+	lower := strings.ToLower(trimmed)
+	if strings.HasPrefix(lower, "/thinking") {
+		return m.handleThinkingCommand(lower)
+	}
+	switch lower {
 	case "/exit", "/quit":
 		// Return a special message type that will trigger quit
 		return borderedResponseMsg{content: "", isQuit: true}
@@ -1034,6 +1095,7 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
   /model   - Change model interactively
   /status  - Show current model and provider
   /system  - Show system prompt
+  /thinking [on|off] - Toggle model thinking (if supported)
   /verbose - Toggle verbose/debug mode
   /clear   - Clear chat history
   /attachments - List attached images
@@ -1073,6 +1135,16 @@ Keyboard shortcuts:
 	case "/status":
 		// Show current model and provider status
 		statusMsg := fmt.Sprintf("📊 Current Configuration:\n  Provider: %s\n  Model: %s", m.provider, m.model)
+		if m.yoloEnabled {
+			statusMsg = fmt.Sprintf("%s\n  Shell: YOLO (UNSAFE)", statusMsg)
+		}
+		if supportsThinkingToggle(m.provider, m.model) {
+			thinkingState := "Off"
+			if m.thinkingEnabled {
+				thinkingState = "On"
+			}
+			statusMsg = fmt.Sprintf("%s\n  Thinking: %s", statusMsg, thinkingState)
+		}
 		return borderedResponseMsg{content: statusMsg, isCommand: true}
 	case "/system":
 		// Show the current system prompt with tools
@@ -1169,6 +1241,34 @@ Keyboard shortcuts:
 	}
 }
 
+func (m *BorderedTUI) handleThinkingCommand(cmd string) borderedResponseMsg {
+	if !supportsThinkingToggle(m.provider, m.model) {
+		return borderedResponseMsg{content: "Thinking toggle is not available for this model.", isCommand: true}
+	}
+	fields := strings.Fields(cmd)
+	if len(fields) >= 2 {
+		switch fields[1] {
+		case "on", "enable", "enabled":
+			m.thinkingEnabled = true
+			m.applyThinkingParams(true)
+			return borderedResponseMsg{content: "Thinking: ON", isCommand: true}
+		case "off", "disable", "disabled":
+			m.thinkingEnabled = false
+			m.applyThinkingParams(false)
+			return borderedResponseMsg{content: "Thinking: OFF", isCommand: true}
+		default:
+			return borderedResponseMsg{content: "Usage: /thinking [on|off]", isCommand: true}
+		}
+	}
+
+	m.thinkingEnabled = !m.thinkingEnabled
+	m.applyThinkingParams(m.thinkingEnabled)
+	if m.thinkingEnabled {
+		return borderedResponseMsg{content: "Thinking: ON", isCommand: true}
+	}
+	return borderedResponseMsg{content: "Thinking: OFF", isCommand: true}
+}
+
 type borderedResponseMsg struct {
 	content          string
 	err              error
@@ -1257,6 +1357,44 @@ func (m *BorderedTUI) listenForToolEvents() tea.Cmd {
 
 		return toolEventMsg{event: event}
 	}
+}
+
+func supportsThinkingToggle(provider, model string) bool {
+	p := strings.ToLower(strings.TrimSpace(provider))
+	m := strings.ToLower(strings.TrimSpace(model))
+	if p != "moonshot" && p != "kimi" {
+		return false
+	}
+	return strings.HasPrefix(m, "kimi-k2.5") || strings.Contains(m, "kimi-k2.5")
+}
+
+func (m *BorderedTUI) applyModelDefaults() {
+	if supportsThinkingToggle(m.provider, m.model) {
+		m.thinkingEnabled = true
+		m.applyThinkingParams(true)
+		return
+	}
+	m.thinkingEnabled = false
+	m.agent.SetRequestParams(m.baseRequestParams)
+}
+
+func (m *BorderedTUI) applyThinkingParams(enabled bool) {
+	if !supportsThinkingToggle(m.provider, m.model) {
+		return
+	}
+	params := agent.RequestParams{
+		Temperature: 1.0,
+		TopP:        0.95,
+		ExtraBody:   nil,
+	}
+	if !enabled {
+		params.ExtraBody = map[string]interface{}{
+			"thinking": map[string]interface{}{
+				"type": "disabled",
+			},
+		}
+	}
+	m.agent.SetRequestParams(params)
 }
 
 // --- Image attachment helpers ---
@@ -1520,7 +1658,7 @@ func saveClipboardPNG() (string, error) {
 	if err != nil {
 		_ = os.Remove(path)
 		if len(out) > 0 {
-			return "", fmt.Errorf(string(out))
+			return "", errors.New(string(out))
 		}
 		return "", err
 	}

@@ -96,6 +96,9 @@ GOOGLE_CX=...              # Custom Search Engine ID
 # Start interactive mode (default: OpenAI GPT-4)
 simple-agent
 
+# Start interactive mode with unrestricted shell commands (DANGEROUS)
+simple-agent --yolo
+
 # Use a specific model
 simple-agent --provider anthropic --model claude-3-opus-20240229
 
@@ -135,7 +138,7 @@ The TUI provides a delightful chat experience:
 | 💾 **file_write** | Create/overwrite files | "Create a Python hello world script" |
 | ✏️ **file_edit** | Modify existing files | "Add error handling to that function" |
 | 📁 **directory_list** | Browse directories | "What's in the src folder?" |
-| 🖥️ **shell** | Run commands safely | "Show git status" |
+| 🖥️ **shell** | Run commands (restricted allowlist by default; use `--yolo` to allow any command) | "Show git status" |
 | 📚 **wikipedia** | Search Wikipedia | "Tell me about quantum computing" |
 | 🔍 **google_search** | Web search (requires API) | "Find the latest Go releases" |
 

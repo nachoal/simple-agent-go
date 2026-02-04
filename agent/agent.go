@@ -106,6 +106,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	var totalUsage llm.Usage
 	var allToolResults []tools.ToolResult
 	toolChoice := "auto"
+	totalToolCalls := 0
 
 	for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 		// Emit progress event for iteration
@@ -124,6 +125,8 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			Messages:    a.getMessages(),
 			Temperature: a.config.Temperature,
 			MaxTokens:   a.config.MaxTokens,
+			TopP:        a.config.TopP,
+			ExtraBody:   a.config.ExtraBody,
 			Tools:       availableTools,
 			ToolChoice:  toolChoice,
 		}
@@ -192,6 +195,10 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 
 		// Check if we need to execute tools
 		if len(message.ToolCalls) > 0 {
+			if a.config.MaxToolCalls > 0 && totalToolCalls+len(message.ToolCalls) > a.config.MaxToolCalls {
+				return nil, fmt.Errorf("max tool calls (%d) reached without completion", a.config.MaxToolCalls)
+			}
+			totalToolCalls += len(message.ToolCalls)
 			// Emit progress event for tool calls
 			a.emitProgress(ProgressEvent{
 				Type:      ProgressEventToolCallsStart,
@@ -296,6 +303,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 	// Start streaming goroutine
 	go func() {
 		defer close(events)
+		totalToolCalls := 0
 
 		for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
 			// Create chat request
@@ -361,6 +369,14 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 
 			// Execute tools if needed
 			if len(toolCalls) > 0 {
+				if a.config.MaxToolCalls > 0 && totalToolCalls+len(toolCalls) > a.config.MaxToolCalls {
+					events <- StreamEvent{
+						Type:  EventTypeError,
+						Error: fmt.Errorf("max tool calls (%d) reached", a.config.MaxToolCalls),
+					}
+					return
+				}
+				totalToolCalls += len(toolCalls)
 				// Convert to tool calls
 				calls := make([]tools.ToolCall, len(toolCalls))
 				for i, tc := range toolCalls {
@@ -554,10 +570,31 @@ func WithMaxIterations(max int) Option {
 	}
 }
 
+// WithMaxToolCalls sets the maximum tool calls
+func WithMaxToolCalls(max int) Option {
+	return func(c *Config) {
+		c.MaxToolCalls = max
+	}
+}
+
 // WithTemperature sets the temperature
 func WithTemperature(temp float32) Option {
 	return func(c *Config) {
 		c.Temperature = temp
+	}
+}
+
+// WithTopP sets top-p
+func WithTopP(topP float32) Option {
+	return func(c *Config) {
+		c.TopP = topP
+	}
+}
+
+// WithExtraBody sets provider-specific extra body parameters
+func WithExtraBody(extra map[string]interface{}) Option {
+	return func(c *Config) {
+		c.ExtraBody = extra
 	}
 }
 
@@ -601,6 +638,41 @@ func WithProgressHandler(handler func(ProgressEvent)) Option {
 func WithLMStudioParser(enabled bool) Option {
 	return func(c *Config) {
 		c.EnableLMStudioParser = enabled
+	}
+}
+
+// SetRequestParams updates the per-request model parameters.
+func (a *agent) SetRequestParams(params RequestParams) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.config.Temperature = params.Temperature
+	a.config.TopP = params.TopP
+	if params.ExtraBody == nil {
+		a.config.ExtraBody = nil
+		return
+	}
+	clone := make(map[string]interface{}, len(params.ExtraBody))
+	for k, v := range params.ExtraBody {
+		clone[k] = v
+	}
+	a.config.ExtraBody = clone
+}
+
+// GetRequestParams returns the current per-request model parameters.
+func (a *agent) GetRequestParams() RequestParams {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	var extra map[string]interface{}
+	if a.config.ExtraBody != nil {
+		extra = make(map[string]interface{}, len(a.config.ExtraBody))
+		for k, v := range a.config.ExtraBody {
+			extra[k] = v
+		}
+	}
+	return RequestParams{
+		Temperature: a.config.Temperature,
+		TopP:        a.config.TopP,
+		ExtraBody:   extra,
 	}
 }
 

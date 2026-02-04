@@ -34,6 +34,7 @@ var (
 	provider     string
 	model        string
 	verbose      bool
+	yolo         bool
 	continueConv bool
 	resume       string
 	resumeSet    bool
@@ -44,7 +45,17 @@ var (
 		Use:   "simple-agent",
 		Short: "AI agent with tool support",
 		Long:  "Simple Agent Go - A powerful AI agent framework with multiple LLM providers and tool support",
-		PreRun: func(cmd *cobra.Command, args []string) {
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			// Enable debug logging if verbose flag is set
+			if verbose {
+				os.Setenv("SIMPLE_AGENT_DEBUG", "true")
+			}
+
+			// Allow unrestricted shell commands if --yolo is set (DANGEROUS)
+			if yolo {
+				os.Setenv("SIMPLE_AGENT_YOLO", "true")
+			}
+
 			// Check if resume flag was explicitly set
 			resumeSet = cmd.Flags().Changed("resume")
 		},
@@ -81,6 +92,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&provider, "provider", "", "LLM provider (openai, anthropic, moonshot, etc)")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "", "Model to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
+	rootCmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Allow the shell tool to run any command (DANGEROUS)")
 
 	// TUI-specific flags
 	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
@@ -190,7 +202,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
 
 	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
+		agent.WithMaxIterations(1000),
+		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
 		agent.WithLMStudioParser(enableLMStudioParser),
 	)
@@ -234,7 +247,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 					return fmt.Errorf("failed to create %s client: %w", provider, err)
 				}
 				agentInstance = agent.New(llmClient,
-					agent.WithMaxIterations(10),
+					agent.WithMaxIterations(1000),
+					agent.WithMaxToolCalls(1000),
 					agent.WithTemperature(0.7),
 					agent.WithLMStudioParser(enableLMStudioParser),
 				)
@@ -321,7 +335,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("failed to create %s client: %w", provider, err)
 			}
 			agentInstance = agent.New(llmClient,
-				agent.WithMaxIterations(10),
+				agent.WithMaxIterations(1000),
+				agent.WithMaxToolCalls(1000),
 				agent.WithTemperature(0.7),
 				agent.WithLMStudioParser(enableLMStudioParser),
 			)
@@ -415,7 +430,8 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	// Create agent
 	agentInstance := agent.New(llmClient,
-		agent.WithMaxIterations(10),
+		agent.WithMaxIterations(1000),
+		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
 		agent.WithLMStudioParser(enableLMStudioParser),
 	)

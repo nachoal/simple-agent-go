@@ -18,11 +18,12 @@ const (
 
 // Message represents a chat message
 type Message struct {
-	Role       Role       `json:"role"`
-	Content    *string    `json:"content,omitempty"`      // Pointer to allow nil/omission
-	Name       string     `json:"name,omitempty"`         // For tool messages
-	ToolCallID string     `json:"tool_call_id,omitempty"` // For tool responses
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`   // For assistant messages
+	Role             Role       `json:"role"`
+	Content          *string    `json:"content,omitempty"`           // Pointer to allow nil/omission
+	ReasoningContent *string    `json:"reasoning_content,omitempty"` // Provider-specific reasoning content
+	Name             string     `json:"name,omitempty"`              // For tool messages
+	ToolCallID        string     `json:"tool_call_id,omitempty"`      // For tool responses
+	ToolCalls         []ToolCall `json:"tool_calls,omitempty"`        // For assistant messages
 }
 
 // ToolCall represents a function/tool call request
@@ -88,6 +89,7 @@ type ChatRequest struct {
 	Temperature      float32                  `json:"temperature,omitempty"`
 	MaxTokens        int                      `json:"max_tokens,omitempty"`
 	TopP             float32                  `json:"top_p,omitempty"`
+	ExtraBody        map[string]interface{}   `json:"extra_body,omitempty"`
 	Stream           bool                     `json:"stream,omitempty"`
 	Tools            []map[string]interface{} `json:"tools,omitempty"`
 	ToolChoice       interface{}              `json:"tool_choice,omitempty"` // "auto", "none", or specific tool

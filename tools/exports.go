@@ -3,6 +3,7 @@ package tools
 import (
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/nachoal/simple-agent-go/tools/base"
@@ -63,6 +64,10 @@ func NewCalculateTool() Tool {
 
 // NewShellTool creates a new shell tool
 func NewShellTool() Tool {
+	yolo := strings.EqualFold(os.Getenv("SIMPLE_AGENT_YOLO"), "true") ||
+		os.Getenv("SIMPLE_AGENT_YOLO") == "1" ||
+		strings.EqualFold(os.Getenv("SIMPLE_AGENT_YOLO"), "yes")
+
 	// Default allowed commands for safety
 	allowedCommands := []string{
 		"ls", "cat", "grep", "find", "echo", "pwd", "date",
@@ -70,12 +75,18 @@ func NewShellTool() Tool {
 		"diff", "file", "which", "env", "printenv",
 	}
 
+	desc := "Execute shell commands safely with timeout and output capture. Input is a command string, or a JSON string like {\"command\":\"...\",\"working_dir\":\"...\",\"timeout\":30,\"env\":[\"K=V\"]}."
+	if yolo {
+		desc = "Execute shell commands (UNSAFE: --yolo enabled; any command allowed) with timeout and output capture. Input is a command string, or a JSON string like {\"command\":\"...\",\"working_dir\":\"...\",\"timeout\":30,\"env\":[\"K=V\"]}."
+	}
+
 	return &ShellTool{
 		BaseTool: base.BaseTool{
 			ToolName: "shell",
-			ToolDesc: "Execute shell commands safely with timeout and output capture",
+			ToolDesc: desc,
 		},
 		allowedCommands: allowedCommands,
+		allowAll:        yolo,
 	}
 }
 
