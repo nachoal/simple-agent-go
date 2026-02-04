@@ -8,16 +8,16 @@ import (
 // RegisterAll registers all built-in tools
 func RegisterAll() {
 	// File operations
-	registry.Register("file_read", func() tools.Tool {
-		return tools.NewFileReadTool()
+	registry.Register("read", func() tools.Tool {
+		return tools.NewReadTool()
 	})
 
-	registry.Register("file_write", func() tools.Tool {
-		return tools.NewFileWriteTool()
+	registry.Register("write", func() tools.Tool {
+		return tools.NewWriteTool()
 	})
 
-	registry.Register("file_edit", func() tools.Tool {
-		return tools.NewFileEditTool()
+	registry.Register("edit", func() tools.Tool {
+		return tools.NewEditTool()
 	})
 
 	registry.Register("directory_list", func() tools.Tool {
@@ -29,8 +29,8 @@ func RegisterAll() {
 		return tools.NewCalculateTool()
 	})
 
-	registry.Register("shell", func() tools.Tool {
-		return tools.NewShellTool()
+	registry.Register("bash", func() tools.Tool {
+		return tools.NewBashTool()
 	})
 
 	// Search tools

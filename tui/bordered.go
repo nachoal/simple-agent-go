@@ -203,7 +203,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	// Border style for input
 	borderColor := lipgloss.Color("15")
 	if yoloEnabled {
-		borderColor = lipgloss.Color("196") // Red indicator for unsafe shell mode
+		borderColor = lipgloss.Color("196") // Red indicator for unsafe bash mode
 	}
 	borderStyle := lipgloss.NewStyle().
 		Border(lipgloss.RoundedBorder()).
@@ -926,7 +926,7 @@ func (m BorderedTUI) View() string {
 	yoloInfo := ""
 	if m.yoloEnabled {
 		yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-		yoloInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Shell:"), yoloStyle.Render("YOLO"))
+		yoloInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Bash:"), yoloStyle.Render("YOLO"))
 	}
 	modelInfo := fmt.Sprintf("%s %s %s %s %s %s%s%s%s",
 		grayStyle.Render("Model:"),
@@ -955,7 +955,7 @@ func (m BorderedTUI) View() string {
 		plainTextWidth += len(" | Attached: ") + len(fmt.Sprintf("%d", len(m.attachments)))
 	}
 	if yoloInfo != "" {
-		plainTextWidth += len(" | Shell: ") + len("YOLO")
+		plainTextWidth += len(" | Bash: ") + len("YOLO")
 	}
 
 	// Right-align the model info to match the box width
@@ -1136,7 +1136,7 @@ Keyboard shortcuts:
 		// Show current model and provider status
 		statusMsg := fmt.Sprintf("📊 Current Configuration:\n  Provider: %s\n  Model: %s", m.provider, m.model)
 		if m.yoloEnabled {
-			statusMsg = fmt.Sprintf("%s\n  Shell: YOLO (UNSAFE)", statusMsg)
+			statusMsg = fmt.Sprintf("%s\n  Bash: YOLO (UNSAFE)", statusMsg)
 		}
 		if supportsThinkingToggle(m.provider, m.model) {
 			thinkingState := "Off"

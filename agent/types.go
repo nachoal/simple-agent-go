@@ -37,6 +37,7 @@ func DefaultConfig() Config {
 		MaxTokens:            2048,
 		TopP:                 0,
 		ExtraBody:            nil,
+		Tools:                []string{"read", "bash", "edit", "write", "google_search"},
 		Verbose:              false,
 		Timeout:              5 * time.Minute,
 		MemorySize:           100,

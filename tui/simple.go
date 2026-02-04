@@ -284,13 +284,13 @@ const helpText = `Available commands:
 /save    - Save conversation
 /load    - Load conversation
 /exit    - Exit application
-!<cmd>   - Execute shell command`
+!<cmd>   - Execute bash command`
 
 const toolsText = `Loaded tools:
 🧮 calculate - Evaluate mathematical expressions
 📖 wikipedia - Search Wikipedia
 🔍 google_search - Search the web
-📄 file_read - Read file contents
-💾 file_write - Write to files
-📝 file_edit - Edit files
+📄 read - Read file contents
+💾 write - Write to files
+📝 edit - Edit files
 📁 directory_list - List directory contents`

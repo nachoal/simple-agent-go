@@ -692,8 +692,11 @@ func (a *agent) getToolListForPrompt() string {
 	var toolInfo strings.Builder
 	toolInfo.WriteString("Available tools:\n\n")
 
-	// Get all tool names
-	toolNames := a.toolRegistry.List()
+	// Prefer the configured toolset, otherwise list everything registered.
+	toolNames := a.config.Tools
+	if len(toolNames) == 0 {
+		toolNames = a.toolRegistry.List()
+	}
 
 	// Sort for consistent ordering
 	sort.Strings(toolNames)
@@ -704,40 +707,10 @@ func (a *agent) getToolListForPrompt() string {
 			continue
 		}
 
-		// Get tool schema to extract parameter information
-		schema, err := a.toolRegistry.GetSchema(name)
-		if err != nil {
-			continue
-		}
-
-		toolInfo.WriteString(fmt.Sprintf("%s:\n", name))
-		toolInfo.WriteString(fmt.Sprintf("Description: %s\n", tool.Description()))
-
-		// Extract parameter information from schema
-		if fn, ok := schema["function"].(map[string]interface{}); ok {
-			if params, ok := fn["parameters"].(map[string]interface{}); ok {
-				if props, ok := params["properties"].(map[string]interface{}); ok {
-					toolInfo.WriteString("Parameters:\n")
-					for paramName, paramDef := range props {
-						if paramMap, ok := paramDef.(map[string]interface{}); ok {
-							paramType := "string"
-							if t, ok := paramMap["type"].(string); ok {
-								paramType = t
-							}
-							desc := ""
-							if d, ok := paramMap["description"].(string); ok {
-								desc = d
-							}
-							toolInfo.WriteString(fmt.Sprintf("  - %s (%s): %s\n", paramName, paramType, desc))
-						}
-					}
-				}
-			}
-		}
-
-		toolInfo.WriteString("\n")
+		toolInfo.WriteString(fmt.Sprintf("- %s: %s\n", name, tool.Description()))
 	}
 
+	toolInfo.WriteString("\n")
 	toolInfo.WriteString("When you need to use a tool, respond with a JSON object in this format:\n")
 	toolInfo.WriteString(`{"name": "tool_name", "arguments": {"param1": "value1", "param2": "value2"}}`)
 	toolInfo.WriteString("\n\nDo not include any other text when calling a tool, just the JSON object.")

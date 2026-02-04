@@ -12,7 +12,7 @@ A blazing-fast, elegant AI agent framework for Go with a beautiful terminal UI. 
 - 🚀 **Lightning Fast** - Leverages Go's concurrency for parallel tool execution
 - 🎨 **Beautiful TUI** - Elegant terminal interface with markdown rendering and animated spinners
 - 🤖 **8 LLM Providers** - OpenAI, Anthropic, Google, local models, and more
-- 🛠️ **Rich Tool System** - File operations, shell commands, web search, and more
+- 🛠️ **Rich Tool System** - File operations, bash commands, web search, and more
 - 📦 **Zero Dependencies** - Single static binary, runs anywhere
 - 🎯 **Smart Interactions** - ReAct prompting and native function calling
 - ⚡ **Live Streaming** - Real-time response streaming from all providers
@@ -39,7 +39,7 @@ graph TB
     Agent --> Tools[Tool System]
     
     Tools --> FileOps[File Operations]
-    Tools --> Shell[Shell Commands]
+    Tools --> Bash[Bash Commands]
     Tools --> Search[Web Search]
     Tools --> Wiki[Wikipedia]
     
@@ -96,7 +96,7 @@ GOOGLE_CX=...              # Custom Search Engine ID
 # Start interactive mode (default: OpenAI GPT-4)
 simple-agent
 
-# Start interactive mode with unrestricted shell commands (DANGEROUS)
+# Start interactive mode with unrestricted bash commands (DANGEROUS)
 simple-agent --yolo
 
 # Use a specific model
@@ -134,11 +134,11 @@ The TUI provides a delightful chat experience:
 | Tool | Description | Example Use |
 |------|-------------|-------------|
 | 🧮 **calculate** | Evaluate math expressions | "What's 2^10 + sqrt(144)?" |
-| 📄 **file_read** | Read any file | "Show me the contents of main.go" |
-| 💾 **file_write** | Create/overwrite files | "Create a Python hello world script" |
-| ✏️ **file_edit** | Modify existing files | "Add error handling to that function" |
+| 📄 **read** | Read any file | "Show me the contents of main.go" |
+| 💾 **write** | Create/overwrite files | "Create a Python hello world script" |
+| ✏️ **edit** | Modify existing files | "Add error handling to that function" |
 | 📁 **directory_list** | Browse directories | "What's in the src folder?" |
-| 🖥️ **shell** | Run commands (restricted allowlist by default; use `--yolo` to allow any command) | "Show git status" |
+| 🖥️ **bash** | Run commands (restricted allowlist by default; use `--yolo` to allow any command) | "Show git status" |
 | 📚 **wikipedia** | Search Wikipedia | "Tell me about quantum computing" |
 | 🔍 **google_search** | Web search (requires API) | "Find the latest Go releases" |
 

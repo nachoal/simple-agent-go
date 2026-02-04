@@ -12,32 +12,32 @@ import (
 // Export tool constructors to avoid import cycles
 // These are implemented in their respective files but exported here
 
-// NewFileReadTool creates a new file read tool
-func NewFileReadTool() Tool {
-	return &FileReadTool{
+// NewReadTool creates a new read tool.
+func NewReadTool() Tool {
+	return &ReadTool{
 		BaseTool: base.BaseTool{
-			ToolName: "file_read",
-			ToolDesc: "Read the contents of a file. Input must be JSON with 'path' field. Example: {\"path\": \"file.txt\"}",
+			ToolName: "read",
+			ToolDesc: "Read the contents of a file. Supports optional offset/limit for large files. Example: {\"path\":\"file.txt\",\"offset\":1,\"limit\":200}",
 		},
 	}
 }
 
-// NewFileWriteTool creates a new file write tool
-func NewFileWriteTool() Tool {
-	return &FileWriteTool{
+// NewWriteTool creates a new write tool.
+func NewWriteTool() Tool {
+	return &WriteTool{
 		BaseTool: base.BaseTool{
-			ToolName: "file_write",
-			ToolDesc: "Write content to a file, creating it if it doesn't exist. This overwrites the entire file content. Input should be a JSON string with 'path' and 'content' fields.",
+			ToolName: "write",
+			ToolDesc: "Create or overwrite a file. Creates parent directories. Example: {\"path\":\"file.txt\",\"content\":\"hello\"}",
 		},
 	}
 }
 
-// NewFileEditTool creates a new file edit tool
-func NewFileEditTool() Tool {
-	return &FileEditTool{
+// NewEditTool creates a new edit tool.
+func NewEditTool() Tool {
+	return &EditTool{
 		BaseTool: base.BaseTool{
-			ToolName: "file_edit",
-			ToolDesc: "Edit a file by replacing old_str with new_str. Input must be JSON with 'path', 'old_str', and 'new_str' fields. Example: {\"path\": \"file.txt\", \"old_str\": \"old\", \"new_str\": \"new\"}",
+			ToolName: "edit",
+			ToolDesc: "Edit a file by replacing exact oldText with newText (must be unique). Example: {\"path\":\"file.txt\",\"oldText\":\"old\",\"newText\":\"new\"}",
 		},
 	}
 }
@@ -62,8 +62,8 @@ func NewCalculateTool() Tool {
 	}
 }
 
-// NewShellTool creates a new shell tool
-func NewShellTool() Tool {
+// NewBashTool creates a new bash tool.
+func NewBashTool() Tool {
 	yolo := strings.EqualFold(os.Getenv("SIMPLE_AGENT_YOLO"), "true") ||
 		os.Getenv("SIMPLE_AGENT_YOLO") == "1" ||
 		strings.EqualFold(os.Getenv("SIMPLE_AGENT_YOLO"), "yes")
@@ -75,14 +75,14 @@ func NewShellTool() Tool {
 		"diff", "file", "which", "env", "printenv",
 	}
 
-	desc := "Execute shell commands safely with timeout and output capture. Input is a command string, or a JSON string like {\"command\":\"...\",\"working_dir\":\"...\",\"timeout\":30,\"env\":[\"K=V\"]}."
+	desc := "Execute bash commands safely with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
 	if yolo {
-		desc = "Execute shell commands (UNSAFE: --yolo enabled; any command allowed) with timeout and output capture. Input is a command string, or a JSON string like {\"command\":\"...\",\"working_dir\":\"...\",\"timeout\":30,\"env\":[\"K=V\"]}."
+		desc = "Execute bash commands (UNSAFE: --yolo enabled; any command allowed) with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
 	}
 
-	return &ShellTool{
+	return &BashTool{
 		BaseTool: base.BaseTool{
-			ToolName: "shell",
+			ToolName: "bash",
 			ToolDesc: desc,
 		},
 		allowedCommands: allowedCommands,

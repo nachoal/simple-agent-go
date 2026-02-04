@@ -92,7 +92,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&provider, "provider", "", "LLM provider (openai, anthropic, moonshot, etc)")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "", "Model to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
-	rootCmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Allow the shell tool to run any command (DANGEROUS)")
+	rootCmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Allow the bash tool to run any command (DANGEROUS)")
 
 	// TUI-specific flags
 	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
@@ -487,11 +487,11 @@ func listTools(cmd *cobra.Command, args []string) {
 	// Define icons for tools
 	icons := map[string]string{
 		"calculate":      "🧮",
-		"file_read":      "📄",
-		"file_write":     "💾",
-		"file_edit":      "📝",
+		"read":           "📄",
+		"write":          "💾",
+		"edit":           "📝",
 		"directory_list": "📁",
-		"shell":          "🖥️",
+		"bash":           "🖥️",
 		"wikipedia":      "📚",
 		"google_search":  "🔍",
 	}

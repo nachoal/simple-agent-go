@@ -10,15 +10,15 @@ import (
 )
 
 func TestShellTool_AllowlistRejectsDisallowedCommand(t *testing.T) {
-	tool := &ShellTool{
-		BaseTool: base.BaseTool{ToolName: "shell", ToolDesc: "test"},
+	tool := &BashTool{
+		BaseTool: base.BaseTool{ToolName: "bash", ToolDesc: "test"},
 		allowedCommands: []string{
 			"echo",
 		},
 		allowAll: false,
 	}
 
-	_, err := tool.Execute(context.Background(), json.RawMessage(`{"input":"curl https://example.com"}`))
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"curl https://example.com"}`))
 	if err == nil {
 		t.Fatalf("expected error, got nil")
 	}
@@ -33,13 +33,13 @@ func TestShellTool_AllowlistRejectsDisallowedCommand(t *testing.T) {
 }
 
 func TestShellTool_YoloAllowsAnyCommand(t *testing.T) {
-	tool := &ShellTool{
-		BaseTool:        base.BaseTool{ToolName: "shell", ToolDesc: "test"},
+	tool := &BashTool{
+		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
 		allowedCommands: nil, // should be ignored when allowAll is true
 		allowAll:        true,
 	}
 
-	out, err := tool.Execute(context.Background(), json.RawMessage(`{"input":"echo hello"}`))
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"echo hello"}`))
 	if err != nil {
 		t.Fatalf("expected nil error, got %T (%v)", err, err)
 	}
@@ -51,10 +51,10 @@ func TestShellTool_YoloAllowsAnyCommand(t *testing.T) {
 func TestNewShellTool_YoloEnablesAllowAll(t *testing.T) {
 	t.Setenv("SIMPLE_AGENT_YOLO", "true")
 
-	tool := NewShellTool()
-	shellTool, ok := tool.(*ShellTool)
+	tool := NewBashTool()
+	shellTool, ok := tool.(*BashTool)
 	if !ok {
-		t.Fatalf("expected *ShellTool, got %T", tool)
+		t.Fatalf("expected *BashTool, got %T", tool)
 	}
 	if !shellTool.allowAll {
 		t.Fatalf("expected allowAll=true when SIMPLE_AGENT_YOLO is set")

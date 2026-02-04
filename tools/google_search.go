@@ -12,9 +12,10 @@ import (
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
 
-// GoogleSearchParams now uses generic input like Ruby
-// The input string is the search query directly
-type GoogleSearchParams = base.GenericParams
+type GoogleSearchParams struct {
+	Query string `json:"query" schema:"required" description:"Search query"`
+	Num   int    `json:"num,omitempty" description:"Number of results (default: 10, max: 10)"`
+}
 
 // GoogleSearchTool performs Google searches using the Custom Search API
 type GoogleSearchTool struct {
@@ -26,19 +27,18 @@ type GoogleSearchTool struct {
 
 // Parameters returns the parameters struct
 func (t *GoogleSearchTool) Parameters() interface{} {
-	return &base.GenericParams{}
+	return &GoogleSearchParams{}
 }
 
 // Execute performs a Google search and returns formatted results
 func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) (string, error) {
-	var args base.GenericParams
+	var args GoogleSearchParams
 	if err := json.Unmarshal(params, &args); err != nil {
 		return "", NewToolError("INVALID_PARAMS", "Failed to parse parameters").
 			WithDetail("error", err.Error())
 	}
 
-	// In Ruby style, the input is the query directly
-	query := strings.TrimSpace(args.Input)
+	query := strings.TrimSpace(args.Query)
 	if query == "" {
 		return "", NewToolError("VALIDATION_FAILED", "Query cannot be empty")
 	}
@@ -49,8 +49,14 @@ func (t *GoogleSearchTool) Execute(ctx context.Context, params json.RawMessage) 
 			WithDetail("help", "Set GOOGLE_API_KEY and GOOGLE_CX environment variables")
 	}
 
-	// Default to 10 results (Ruby behavior)
-	num := 10
+	// Default to 10 results
+	num := args.Num
+	if num <= 0 {
+		num = 10
+	}
+	if num > 10 {
+		num = 10
+	}
 
 	// Prepare the request
 	baseURL := "https://www.googleapis.com/customsearch/v1"
