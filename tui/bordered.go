@@ -369,7 +369,7 @@ func isYoloEnabled() bool {
 }
 
 // PrintHeader prints the TUI header to stdout before the TUI starts
-func PrintHeader(provider, model string) {
+func PrintHeader(provider, model string, configuredTools []string) {
 	// Colors matching Python version
 	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	modelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // #5B9BD5
@@ -395,9 +395,16 @@ func PrintHeader(provider, model string) {
 		verboseIndicator,
 		yoloIndicator)
 
-	toolCount := len(registry.List())
+	registeredToolCount := len(registry.List())
+	toolSummary := ""
+	if configuredTools == nil {
+		toolSummary = fmt.Sprintf("Tools: all (%d available)", registeredToolCount)
+	} else {
+		toolSummary = fmt.Sprintf("Tools: %d enabled (%d available)", len(configuredTools), registeredToolCount)
+	}
+
 	header2 := fmt.Sprintf("%s | %s",
-		toolsStyle.Render(fmt.Sprintf("Loaded %d tools", toolCount)),
+		toolsStyle.Render(toolSummary),
 		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /thinking, /verbose, /clear, /exit"))
 
 	fmt.Println(header1)

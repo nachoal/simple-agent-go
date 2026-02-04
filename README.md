@@ -99,6 +99,12 @@ simple-agent
 # Start interactive mode with unrestricted bash commands (DANGEROUS)
 simple-agent --yolo
 
+# Start with a custom toolset for this run
+simple-agent --tools read,bash,edit,write
+
+# Start with all registered tools enabled
+simple-agent --tools all
+
 # Use a specific model
 simple-agent --provider anthropic --model claude-3-opus-20240229
 

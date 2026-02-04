@@ -39,6 +39,7 @@ var (
 	resume       string
 	resumeSet    bool
 	customParser string
+	toolsFlag    string
 
 	// Root command
 	rootCmd = &cobra.Command{
@@ -93,6 +94,12 @@ func init() {
 	rootCmd.PersistentFlags().StringVar(&model, "model", "", "Model to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Allow the bash tool to run any command (DANGEROUS)")
+	rootCmd.PersistentFlags().StringVar(
+		&toolsFlag,
+		"tools",
+		"",
+		"Comma-separated tool names to enable (e.g. read,bash,edit,write). Use 'all' to enable all registered tools.",
+	)
 
 	// TUI-specific flags
 	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
@@ -201,12 +208,30 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	// Determine custom parsers
 	enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
 
-	agentInstance := agent.New(llmClient,
+	toolsRaw := strings.TrimSpace(toolsFlag)
+	toolsOverride, toolsAll, err := parseToolsOverride(toolsRaw)
+	if err != nil {
+		return err
+	}
+
+	effectiveToolsForHeader := agent.DefaultConfig().Tools
+	agentOpts := []agent.Option{
 		agent.WithMaxIterations(1000),
 		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
 		agent.WithLMStudioParser(enableLMStudioParser),
-	)
+	}
+	if toolsRaw != "" {
+		if toolsAll {
+			agentOpts = append(agentOpts, agent.WithTools(nil)) // empty means "all tools"
+			effectiveToolsForHeader = nil
+		} else {
+			agentOpts = append(agentOpts, agent.WithTools(toolsOverride))
+			effectiveToolsForHeader = toolsOverride
+		}
+	}
+
+	agentInstance := agent.New(llmClient, agentOpts...)
 
 	// Initialize history manager
 	historyMgr, err := history.NewManager()
@@ -247,10 +272,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 					return fmt.Errorf("failed to create %s client: %w", provider, err)
 				}
 				agentInstance = agent.New(llmClient,
-					agent.WithMaxIterations(1000),
-					agent.WithMaxToolCalls(1000),
-					agent.WithTemperature(0.7),
-					agent.WithLMStudioParser(enableLMStudioParser),
+					agentOpts...,
 				)
 			}
 		}
@@ -335,10 +357,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				return fmt.Errorf("failed to create %s client: %w", provider, err)
 			}
 			agentInstance = agent.New(llmClient,
-				agent.WithMaxIterations(1000),
-				agent.WithMaxToolCalls(1000),
-				agent.WithTemperature(0.7),
-				agent.WithLMStudioParser(enableLMStudioParser),
+				agentOpts...,
 			)
 		}
 	} else {
@@ -355,6 +374,8 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	// Restore memory if continuing/resuming
 	if continueConv || resumeSet {
 		historyAgent.RestoreMemoryFromSession(session)
+		// Session history includes the original system prompt; ensure it's updated for this run's toolset.
+		historyAgent.SetSystemPrompt(agent.DefaultConfig().SystemPrompt)
 		if verbose && session != nil {
 			fmt.Printf("Restored %d messages from session %s\n", len(session.Messages), session.ID)
 		}
@@ -388,7 +409,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Print header before starting TUI
-	tui.PrintHeader(provider, model)
+	tui.PrintHeader(provider, model, effectiveToolsForHeader)
 
 	// Create and run TUI (bordered version with providers and history)
 	p := tea.NewProgram(
@@ -429,12 +450,27 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
 
 	// Create agent
-	agentInstance := agent.New(llmClient,
+	toolsRaw := strings.TrimSpace(toolsFlag)
+	toolsOverride, toolsAll, err := parseToolsOverride(toolsRaw)
+	if err != nil {
+		return err
+	}
+
+	agentOpts := []agent.Option{
 		agent.WithMaxIterations(1000),
 		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
 		agent.WithLMStudioParser(enableLMStudioParser),
-	)
+	}
+	if toolsRaw != "" {
+		if toolsAll {
+			agentOpts = append(agentOpts, agent.WithTools(nil)) // empty means "all tools"
+		} else {
+			agentOpts = append(agentOpts, agent.WithTools(toolsOverride))
+		}
+	}
+
+	agentInstance := agent.New(llmClient, agentOpts...)
 
 	// If verbose, show the enhanced system prompt (including tools)
 	if verbose {
@@ -515,6 +551,55 @@ func listTools(cmd *cobra.Command, args []string) {
 		paddedName := fmt.Sprintf("%-15s", name)
 		fmt.Printf("  %s %s - %s\n", icon, paddedName, tool.Description())
 	}
+}
+
+func parseToolsOverride(raw string) ([]string, bool, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return nil, false, nil
+	}
+
+	if strings.EqualFold(raw, "all") {
+		// Empty tool list means "send all registered tools".
+		return nil, true, nil
+	}
+
+	var parts []string
+	if strings.Contains(raw, ",") {
+		parts = strings.Split(raw, ",")
+	} else {
+		parts = strings.Fields(raw)
+	}
+
+	out := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+
+	for _, p := range parts {
+		name := strings.ToLower(strings.TrimSpace(p))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+
+		if _, err := registry.Get(name); err != nil {
+			hint := ""
+			if name == "shell" {
+				hint = " (did you mean \"bash\"?)"
+			}
+			return nil, false, fmt.Errorf("unknown tool %q%s; run 'simple-agent tools list' to see available tools", name, hint)
+		}
+
+		out = append(out, name)
+		seen[name] = struct{}{}
+	}
+
+	if len(out) == 0 {
+		return nil, false, fmt.Errorf("no tools specified in --tools; use e.g. --tools read,bash or --tools all")
+	}
+
+	return out, false, nil
 }
 
 func createLLMClient(provider, model string) (llm.Client, error) {
