@@ -190,6 +190,9 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			message.Content = llm.StringPtr("")
 		}
 
+		// Normalize tool arguments to canonical JSON objects before persisting or executing.
+		normalizeLLMToolCalls(message.ToolCalls)
+
 		// Add assistant message to memory
 		a.addMessage(message)
 
@@ -365,6 +368,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 				Content:   contentPtr,
 				ToolCalls: toolCalls,
 			}
+			normalizeLLMToolCalls(assistantMsg.ToolCalls)
 			a.addMessage(assistantMsg)
 
 			// Execute tools if needed
@@ -380,16 +384,12 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 				// Convert to tool calls
 				calls := make([]tools.ToolCall, len(toolCalls))
 				for i, tc := range toolCalls {
+					args, normalizedArgs := llm.NormalizeToolArguments(tc.Function.Arguments)
+
 					calls[i] = tools.ToolCall{
 						ID:        tc.ID,
 						Name:      tc.Function.Name,
-						Arguments: tc.Function.Arguments,
-					}
-
-					// Parse arguments for display
-					var args map[string]interface{}
-					if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
-						args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
+						Arguments: normalizedArgs,
 					}
 
 					// Send tool start event
@@ -398,7 +398,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 						Tool: &ToolEvent{
 							Name:    tc.Function.Name,
 							Args:    args,
-							ArgsRaw: string(tc.Function.Arguments),
+							ArgsRaw: string(normalizedArgs),
 						},
 					}
 				}
@@ -794,12 +794,13 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 			var tmp interface{}
 			if json.Unmarshal([]byte(argsJSON), &tmp) == nil {
 				id := fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+				_, normalizedArgs := llm.NormalizeToolArguments(json.RawMessage(argsJSON))
 				toolCalls = append(toolCalls, llm.ToolCall{
 					ID:   id,
 					Type: "function",
 					Function: llm.FunctionCall{
 						Name:      name,
-						Arguments: json.RawMessage(argsJSON),
+						Arguments: normalizedArgs,
 					},
 				})
 				return toolCalls
@@ -824,13 +825,14 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 		if id == "" {
 			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
 		}
+		_, normalizedArgs := llm.NormalizeToolArguments(singleCall.Arguments)
 
 		toolCalls = append(toolCalls, llm.ToolCall{
 			ID:   id,
 			Type: "function",
 			Function: llm.FunctionCall{
 				Name:      singleCall.Name,
-				Arguments: singleCall.Arguments,
+				Arguments: normalizedArgs,
 			},
 		})
 		return toolCalls
@@ -860,18 +862,26 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 			fmt.Fprintf(os.Stderr, "[Agent] Regex match found tool: %s with args: %s\n", name, string(args))
 		}
+		_, normalizedArgs := llm.NormalizeToolArguments(args)
 
 		toolCalls = append(toolCalls, llm.ToolCall{
 			ID:   id,
 			Type: "function",
 			Function: llm.FunctionCall{
 				Name:      name,
-				Arguments: args,
+				Arguments: normalizedArgs,
 			},
 		})
 	}
 
 	return toolCalls
+}
+
+func normalizeLLMToolCalls(toolCalls []llm.ToolCall) {
+	for i := range toolCalls {
+		_, normalizedArgs := llm.NormalizeToolArguments(toolCalls[i].Function.Arguments)
+		toolCalls[i].Function.Arguments = normalizedArgs
+	}
 }
 
 // executeToolsWithEvents executes tools and emits events without streaming
@@ -889,11 +899,8 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 				tc.ID = generateToolID()
 			}
 
-			// Parse arguments for display
-			var args map[string]interface{}
-			if err := json.Unmarshal(tc.Arguments, &args); err != nil {
-				args = map[string]interface{}{"raw": string(tc.Arguments)}
-			}
+			args, normalizedArgs := llm.NormalizeToolArguments(tc.Arguments)
+			tc.Arguments = normalizedArgs
 
 			// Print to stderr in query mode (no event channel)
 			if eventChan == nil {
@@ -912,7 +919,7 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 						ID:      tc.ID,
 						Name:    tc.Name,
 						Args:    args,
-						ArgsRaw: string(tc.Arguments),
+						ArgsRaw: string(normalizedArgs),
 					},
 				}:
 				case <-ctx.Done():
@@ -935,8 +942,24 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 			if eventChan != nil {
 				eventType := EventTypeToolResult
 				if result.Error != nil {
-					// Could distinguish between timeout/cancel/error here
-					eventType = EventTypeToolResult
+					// Distinguish cancel/timeout from generic errors when possible.
+					if toolErr, ok := result.Error.(*tools.ToolError); ok {
+						switch toolErr.Code {
+						case "EXECUTION_CANCELLED":
+							eventType = EventTypeToolCancel
+						case "EXECUTION_TIMEOUT":
+							eventType = EventTypeToolTimeout
+						}
+					}
+					if eventType == EventTypeToolResult {
+						lowerErr := strings.ToLower(result.Error.Error())
+						switch {
+						case strings.Contains(lowerErr, "context canceled"), strings.Contains(lowerErr, "cancelled"):
+							eventType = EventTypeToolCancel
+						case strings.Contains(lowerErr, "deadline exceeded"), strings.Contains(lowerErr, "timed out"):
+							eventType = EventTypeToolTimeout
+						}
+					}
 				}
 
 				select {
@@ -946,7 +969,7 @@ func (a *agent) executeToolsWithEvents(ctx context.Context, calls []tools.ToolCa
 						ID:      tc.ID,
 						Name:    tc.Name,
 						Args:    args,
-						ArgsRaw: string(tc.Arguments),
+						ArgsRaw: string(normalizedArgs),
 						Result:  result.Result,
 						Error:   result.Error,
 					},

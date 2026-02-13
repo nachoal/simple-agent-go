@@ -413,12 +413,7 @@ func (c *Client) convertRequest(req *llm.ChatRequest) *OllamaRequest {
 		// Convert tool calls if present
 		if len(msg.ToolCalls) > 0 {
 			for _, tc := range msg.ToolCalls {
-				// Parse arguments as map
-				var args map[string]interface{}
-				if err := json.Unmarshal(tc.Function.Arguments, &args); err != nil {
-					// If unmarshal fails, use raw string
-					args = map[string]interface{}{"raw": string(tc.Function.Arguments)}
-				}
+				args, _ := llm.NormalizeToolArguments(tc.Function.Arguments)
 
 				ollamaMsg.ToolCalls = append(ollamaMsg.ToolCalls, OllamaToolCall{
 					Function: struct {
