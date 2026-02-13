@@ -186,12 +186,10 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 
 		// If the message has tool calls, ensure content is not nil.
 		// Some models require `content` to be an empty string if `tool_calls` are present.
+		message.ToolCalls = sanitizeLLMToolCalls(message.ToolCalls)
 		if len(message.ToolCalls) > 0 && message.Content == nil {
 			message.Content = llm.StringPtr("")
 		}
-
-		// Normalize tool arguments to canonical JSON objects before persisting or executing.
-		normalizeLLMToolCalls(message.ToolCalls)
 
 		// Add assistant message to memory
 		a.addMessage(message)
@@ -282,6 +280,8 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 
 // QueryStream sends a query and streams the response
 func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEvent, error) {
+	originalMemory := a.GetMemory()
+
 	// Add user message to memory
 	a.addMessage(llm.Message{
 		Role:    llm.RoleUser,
@@ -306,9 +306,21 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 	// Start streaming goroutine
 	go func() {
 		defer close(events)
+		completed := false
+		defer func() {
+			// If the run was explicitly canceled, drop partial turn state so the
+			// next user message does not inherit an interrupted prompt.
+			if !completed && ctx.Err() != nil {
+				a.SetMemory(originalMemory)
+			}
+		}()
 		totalToolCalls := 0
 
 		for iteration := 0; iteration < a.config.MaxIterations; iteration++ {
+			if ctx.Err() != nil {
+				return
+			}
+
 			// Create chat request
 			request := &llm.ChatRequest{
 				Messages:    a.getMessages(),
@@ -331,35 +343,73 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 
 			// Collect the full response
 			var fullContent strings.Builder
-			var toolCalls []llm.ToolCall
+			var streamToolCalls []streamToolCallState
+			events <- StreamEvent{
+				Type:    EventTypeMessageStart,
+				Message: cloneLLMMessageForStream(llm.Message{Role: llm.RoleAssistant}),
+			}
 
 			// Forward stream events
-			for event := range streamEvents {
-				if len(event.Choices) > 0 {
-					choice := event.Choices[0]
+		streamLoop:
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case event, ok := <-streamEvents:
+					if !ok {
+						break streamLoop
+					}
+					if len(event.Choices) > 0 {
+						choice := event.Choices[0]
 
-					// Handle content delta
-					if choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content != "" {
-						fullContent.WriteString(*choice.Delta.Content)
-						events <- StreamEvent{
-							Type:    EventTypeMessage,
-							Content: *choice.Delta.Content,
+						// Handle content delta
+						if choice.Delta != nil && choice.Delta.Content != nil && *choice.Delta.Content != "" {
+							fullContent.WriteString(*choice.Delta.Content)
+							events <- StreamEvent{
+								Type:    EventTypeMessage,
+								Content: *choice.Delta.Content,
+							}
+							content := fullContent.String()
+							events <- StreamEvent{
+								Type: EventTypeMessageUpdate,
+								Message: cloneLLMMessageForStream(llm.Message{
+									Role:    llm.RoleAssistant,
+									Content: llm.StringPtr(content),
+									ToolCalls: cloneToolCallsForStream(
+										toLLMToolCallsFromStream(streamToolCalls),
+									),
+								}),
+							}
 						}
-					}
 
-					// Handle tool calls
-					if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
-						toolCalls = append(toolCalls, choice.Delta.ToolCalls...)
-					}
+						// Handle tool calls
+						if choice.Delta != nil && len(choice.Delta.ToolCalls) > 0 {
+							streamToolCalls = mergeStreamToolCallDeltas(streamToolCalls, choice.Delta.ToolCalls)
+							partial := llm.Message{
+								Role:      llm.RoleAssistant,
+								Content:   llm.StringPtr(fullContent.String()),
+								ToolCalls: cloneToolCallsForStream(toLLMToolCallsFromStream(streamToolCalls)),
+							}
+							events <- StreamEvent{
+								Type:    EventTypeMessageUpdate,
+								Message: cloneLLMMessageForStream(partial),
+							}
+						}
 
-					// Check finish reason
-					// (finish reason handled later if needed)
+						// Check finish reason
+						// (finish reason handled later if needed)
+					}
 				}
+			}
+
+			if ctx.Err() != nil {
+				return
 			}
 
 			// Create assistant message from collected content
 			contentStr := fullContent.String()
 			var contentPtr *string
+			toolCalls := sanitizeLLMToolCalls(toLLMToolCallsFromStream(streamToolCalls))
 			if contentStr != "" || len(toolCalls) == 0 {
 				contentPtr = &contentStr
 			}
@@ -368,11 +418,20 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 				Content:   contentPtr,
 				ToolCalls: toolCalls,
 			}
-			normalizeLLMToolCalls(assistantMsg.ToolCalls)
+			if len(assistantMsg.ToolCalls) > 0 && assistantMsg.Content == nil {
+				assistantMsg.Content = llm.StringPtr("")
+			}
+			events <- StreamEvent{
+				Type:    EventTypeMessageEnd,
+				Message: cloneLLMMessageForStream(assistantMsg),
+			}
 			a.addMessage(assistantMsg)
 
 			// Execute tools if needed
 			if len(toolCalls) > 0 {
+				if ctx.Err() != nil {
+					return
+				}
 				if a.config.MaxToolCalls > 0 && totalToolCalls+len(toolCalls) > a.config.MaxToolCalls {
 					events <- StreamEvent{
 						Type:  EventTypeError,
@@ -440,6 +499,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			events <- StreamEvent{
 				Type: EventTypeComplete,
 			}
+			completed = true
 			return
 		}
 
@@ -877,11 +937,217 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 	return toolCalls
 }
 
-func normalizeLLMToolCalls(toolCalls []llm.ToolCall) {
-	for i := range toolCalls {
-		_, normalizedArgs := llm.NormalizeToolArguments(toolCalls[i].Function.Arguments)
-		toolCalls[i].Function.Arguments = normalizedArgs
+func sanitizeLLMToolCalls(toolCalls []llm.ToolCall) []llm.ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
 	}
+
+	sanitized := make([]llm.ToolCall, 0, len(toolCalls))
+	for _, tc := range toolCalls {
+		name := strings.TrimSpace(tc.Function.Name)
+		if name == "" {
+			continue
+		}
+		tc.Function.Name = name
+		if strings.TrimSpace(tc.ID) == "" {
+			tc.ID = generateToolID()
+		}
+		if strings.TrimSpace(tc.Type) == "" {
+			tc.Type = "function"
+		}
+		_, normalizedArgs := llm.NormalizeToolArguments(tc.Function.Arguments)
+		tc.Function.Arguments = normalizedArgs
+		sanitized = append(sanitized, tc)
+	}
+
+	return sanitized
+}
+
+type streamToolCallState struct {
+	ID      string
+	Type    string
+	Name    string
+	ArgText string
+}
+
+func mergeStreamToolCallDeltas(states []streamToolCallState, deltas []llm.ToolCall) []streamToolCallState {
+	for _, delta := range deltas {
+		id := strings.TrimSpace(delta.ID)
+		name := strings.TrimSpace(delta.Function.Name)
+		idx := -1
+
+		if id != "" {
+			idx = findStreamToolCallStateByID(states, id)
+			if idx == -1 {
+				idx = findLatestIncompleteStreamToolCallState(states)
+			}
+		} else if name != "" {
+			idx = findLatestStreamToolCallStateByName(states, name)
+			if idx == -1 {
+				idx = findLatestIncompleteStreamToolCallState(states)
+			}
+		} else {
+			if len(states) > 0 {
+				idx = len(states) - 1
+			}
+		}
+
+		if idx == -1 {
+			state := streamToolCallState{
+				ID:   id,
+				Type: strings.TrimSpace(delta.Type),
+				Name: name,
+			}
+			if state.Type == "" {
+				state.Type = "function"
+			}
+			if state.ID == "" && state.Name != "" {
+				state.ID = generateToolID()
+			}
+			if argChunk, ok := decodeToolArgumentsDelta(delta.Function.Arguments); ok {
+				state.ArgText += argChunk
+			}
+			states = append(states, state)
+			continue
+		}
+
+		if states[idx].ID == "" && id != "" {
+			states[idx].ID = id
+		}
+		if states[idx].Name == "" && name != "" {
+			states[idx].Name = name
+		}
+		if states[idx].Type == "" {
+			states[idx].Type = strings.TrimSpace(delta.Type)
+		}
+		if states[idx].Type == "" {
+			states[idx].Type = "function"
+		}
+		if states[idx].ID == "" && states[idx].Name != "" {
+			states[idx].ID = generateToolID()
+		}
+		if argChunk, ok := decodeToolArgumentsDelta(delta.Function.Arguments); ok {
+			states[idx].ArgText += argChunk
+		}
+	}
+
+	return states
+}
+
+func findStreamToolCallStateByID(states []streamToolCallState, id string) int {
+	for i := range states {
+		if states[i].ID == id {
+			return i
+		}
+	}
+	return -1
+}
+
+func findLatestStreamToolCallStateByName(states []streamToolCallState, name string) int {
+	for i := len(states) - 1; i >= 0; i-- {
+		if states[i].Name == name {
+			return i
+		}
+	}
+	return -1
+}
+
+func findLatestIncompleteStreamToolCallState(states []streamToolCallState) int {
+	for i := len(states) - 1; i >= 0; i-- {
+		if strings.TrimSpace(states[i].Name) == "" || strings.TrimSpace(states[i].ID) == "" {
+			return i
+		}
+	}
+	return -1
+}
+
+func decodeToolArgumentsDelta(raw json.RawMessage) (string, bool) {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" {
+		return "", false
+	}
+
+	if strings.HasPrefix(trimmed, "\"") {
+		var chunk string
+		if err := json.Unmarshal(raw, &chunk); err == nil {
+			return chunk, true
+		}
+		return "", false
+	}
+
+	return trimmed, true
+}
+
+func toLLMToolCallsFromStream(states []streamToolCallState) []llm.ToolCall {
+	if len(states) == 0 {
+		return nil
+	}
+
+	toolCalls := make([]llm.ToolCall, 0, len(states))
+	for _, state := range states {
+		name := strings.TrimSpace(state.Name)
+		if name == "" {
+			continue
+		}
+
+		id := strings.TrimSpace(state.ID)
+		if id == "" {
+			id = generateToolID()
+		}
+		callType := strings.TrimSpace(state.Type)
+		if callType == "" {
+			callType = "function"
+		}
+
+		argText := strings.TrimSpace(state.ArgText)
+		rawArgs := json.RawMessage(`{}`)
+		if argText != "" {
+			rawArgs = json.RawMessage(argText)
+		}
+		_, normalizedArgs := llm.NormalizeToolArguments(rawArgs)
+
+		toolCalls = append(toolCalls, llm.ToolCall{
+			ID:   id,
+			Type: callType,
+			Function: llm.FunctionCall{
+				Name:      name,
+				Arguments: normalizedArgs,
+			},
+		})
+	}
+
+	return toolCalls
+}
+
+func cloneToolCallsForStream(toolCalls []llm.ToolCall) []llm.ToolCall {
+	if len(toolCalls) == 0 {
+		return nil
+	}
+	cloned := make([]llm.ToolCall, len(toolCalls))
+	copy(cloned, toolCalls)
+	for i := range cloned {
+		if cloned[i].Function.Arguments != nil {
+			argCopy := append(json.RawMessage(nil), cloned[i].Function.Arguments...)
+			cloned[i].Function.Arguments = argCopy
+		}
+	}
+	return cloned
+}
+
+func cloneLLMMessageForStream(msg llm.Message) *llm.Message {
+	cloned := llm.Message{
+		Role:       msg.Role,
+		Name:       msg.Name,
+		ToolCallID: msg.ToolCallID,
+		ToolCalls:  cloneToolCallsForStream(msg.ToolCalls),
+	}
+	if msg.Content != nil {
+		cloned.Content = llm.StringPtr(*msg.Content)
+	}
+	if msg.ReasoningContent != nil {
+		cloned.ReasoningContent = llm.StringPtr(*msg.ReasoningContent)
+	}
+	return &cloned
 }
 
 // executeToolsWithEvents executes tools and emits events without streaming

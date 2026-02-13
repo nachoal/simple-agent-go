@@ -76,6 +76,7 @@ type ToolResult = tools.ToolResult
 type StreamEvent struct {
 	Type    EventType
 	Content string
+	Message *llm.Message
 	Tool    *ToolEvent
 	Error   error
 }
@@ -84,15 +85,18 @@ type StreamEvent struct {
 type EventType string
 
 const (
-	EventTypeMessage      EventType = "message"
-	EventTypeToolStart    EventType = "tool_start"
-	EventTypeToolProgress EventType = "tool_progress"
-	EventTypeToolResult   EventType = "tool_result"
-	EventTypeToolTimeout  EventType = "tool_timeout"
-	EventTypeToolCancel   EventType = "tool_cancel"
-	EventTypeThinking     EventType = "thinking" // LLM is reasoning
-	EventTypeError        EventType = "error"
-	EventTypeComplete     EventType = "complete"
+	EventTypeMessageStart  EventType = "message_start"
+	EventTypeMessageUpdate EventType = "message_update"
+	EventTypeMessageEnd    EventType = "message_end"
+	EventTypeMessage       EventType = "message"
+	EventTypeToolStart     EventType = "tool_start"
+	EventTypeToolProgress  EventType = "tool_progress"
+	EventTypeToolResult    EventType = "tool_result"
+	EventTypeToolTimeout   EventType = "tool_timeout"
+	EventTypeToolCancel    EventType = "tool_cancel"
+	EventTypeThinking      EventType = "thinking" // LLM is reasoning
+	EventTypeError         EventType = "error"
+	EventTypeComplete      EventType = "complete"
 )
 
 // ToolEvent contains information about a tool execution
