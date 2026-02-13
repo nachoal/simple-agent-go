@@ -33,19 +33,20 @@ const maxToolArgDisplayLen = 140
 
 // BorderedTUI is a minimal TUI that matches the Python bordered_interface.py
 type BorderedTUI struct {
-	agent           agent.Agent
-	llmClient       llm.Client
-	provider        string
-	model           string
-	textarea        textarea.Model
-	historyForAgent []llm.Message // Keep history only for agent context, not UI
-	width           int
-	height          int
-	isThinking      bool
-	typing          strings.Builder // For future streaming support
-	err             error
-	initialized     bool // Track if we've received the first WindowSizeMsg
-	yoloEnabled     bool
+	agent            agent.Agent
+	llmClient        llm.Client
+	provider         string
+	model            string
+	textarea         textarea.Model
+	historyForAgent  []llm.Message // Keep history only for agent context, not UI
+	width            int
+	height           int
+	isThinking       bool
+	streamingMessage *llm.Message // Live assistant message during streaming
+	typedStreamMode  bool         // True when message_start/message_update events are in use
+	err              error
+	initialized      bool // Track if we've received the first WindowSizeMsg
+	yoloEnabled      bool
 
 	// Providers for model selection
 	providers     map[string]llm.Client
@@ -403,6 +404,59 @@ func renderAssistantMessage(renderer *glamour.TermRenderer, content string) stri
 	}
 	// Fallback without glamour
 	return fmt.Sprintf("🤖 Assistant: %s", content)
+}
+
+func cloneMessageForDisplay(msg *llm.Message) *llm.Message {
+	if msg == nil {
+		return nil
+	}
+
+	cloned := llm.Message{
+		Role:       msg.Role,
+		Name:       msg.Name,
+		ToolCallID: msg.ToolCallID,
+	}
+
+	if msg.Content != nil {
+		content := *msg.Content
+		cloned.Content = &content
+	}
+	if msg.ReasoningContent != nil {
+		reasoning := *msg.ReasoningContent
+		cloned.ReasoningContent = &reasoning
+	}
+	if len(msg.ToolCalls) > 0 {
+		cloned.ToolCalls = make([]llm.ToolCall, len(msg.ToolCalls))
+		copy(cloned.ToolCalls, msg.ToolCalls)
+		for i := range cloned.ToolCalls {
+			if cloned.ToolCalls[i].Function.Arguments != nil {
+				argCopy := append([]byte(nil), cloned.ToolCalls[i].Function.Arguments...)
+				cloned.ToolCalls[i].Function.Arguments = argCopy
+			}
+		}
+	}
+
+	return &cloned
+}
+
+func streamMessageToContent(msg *llm.Message) string {
+	if msg == nil {
+		return ""
+	}
+
+	content := llm.GetStringValue(msg.Content)
+	reasoning := strings.TrimSpace(llm.GetStringValue(msg.ReasoningContent))
+
+	if reasoning == "" {
+		return content
+	}
+	if strings.Contains(content, "<think>") {
+		return content
+	}
+	if strings.TrimSpace(content) == "" {
+		return fmt.Sprintf("<think>\n%s\n</think>", reasoning)
+	}
+	return fmt.Sprintf("<think>\n%s\n</think>\n\n%s", reasoning, content)
 }
 
 var thinkTraceRe = regexp.MustCompile(`(?is)<think>\s*(.*?)\s*</think>`)
@@ -779,6 +833,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if m.cancelActiveRun("esc") {
 					m.isThinking = false
 					m.showingTools = false
+					m.streamingMessage = nil
+					m.typedStreamMode = false
+					m.toolEventChan = nil
+					m.resetToolTrackingForNextQuery()
+					m.clearActiveRun()
 					m.textarea.Focus()
 					return m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?")
 				}
@@ -881,11 +940,12 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					// Clear input and reset height
 					m.textarea.Reset()
 					m.textarea.SetHeight(1)
-					m.textarea.Blur()
 
 					// Send to agent or multimodal helper depending on attachments
 					m.isThinking = true
 					m.showingTools = false
+					m.streamingMessage = nil
+					m.typedStreamMode = false
 
 					if len(m.attachments) > 0 && m.supportsVision {
 						runCtx, runID := m.beginRun("multimodal", value)
@@ -913,7 +973,107 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
+		terminal := false
+		runID := m.activeRunID
 		switch msg.event.Type {
+		case agent.EventTypeMessageStart:
+			m.typedStreamMode = true
+			if msg.event.Message != nil {
+				m.streamingMessage = cloneMessageForDisplay(msg.event.Message)
+			} else {
+				empty := ""
+				m.streamingMessage = &llm.Message{Role: llm.RoleAssistant, Content: &empty}
+			}
+
+		case agent.EventTypeMessageUpdate:
+			m.typedStreamMode = true
+			if msg.event.Message != nil {
+				m.streamingMessage = cloneMessageForDisplay(msg.event.Message)
+			}
+
+		case agent.EventTypeMessageEnd:
+			m.typedStreamMode = true
+			if msg.event.Message != nil {
+				m.streamingMessage = cloneMessageForDisplay(msg.event.Message)
+			}
+
+			content := streamMessageToContent(m.streamingMessage)
+			if strings.TrimSpace(content) != "" {
+				m.historyForAgent = append(m.historyForAgent, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: &content,
+				})
+				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, content)))
+			}
+			m.streamingMessage = nil
+
+		case agent.EventTypeMessage:
+			// Legacy chunk event fallback for older stream producers.
+			if !m.typedStreamMode && msg.event.Content != "" {
+				if m.streamingMessage == nil {
+					empty := ""
+					m.streamingMessage = &llm.Message{Role: llm.RoleAssistant, Content: &empty}
+				}
+				current := llm.GetStringValue(m.streamingMessage.Content)
+				updated := current + msg.event.Content
+				m.streamingMessage.Content = &updated
+			}
+
+		case agent.EventTypeComplete:
+			terminal = true
+
+			finalContent := streamMessageToContent(m.streamingMessage)
+			if strings.TrimSpace(finalContent) != "" {
+				m.historyForAgent = append(m.historyForAgent, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: &finalContent,
+				})
+				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, finalContent)))
+			}
+
+			m.tracef("run_end id=%s status=ok mode=stream response_len=%d", runID, len(finalContent))
+			m.isThinking = false
+			m.showingTools = false
+			m.clearActiveRun()
+			m.toolEventChan = nil
+			m.resetToolTrackingForNextQuery()
+			m.streamingMessage = nil
+			m.typedStreamMode = false
+			m.textarea.Focus()
+
+		case agent.EventTypeError:
+			terminal = true
+			if msg.event.Error != nil {
+				m.tracef("run_end id=%s status=error err=%q", runID, msg.event.Error.Error())
+			}
+			m.isThinking = false
+			m.showingTools = false
+			m.clearActiveRun()
+			m.toolEventChan = nil
+			m.resetToolTrackingForNextQuery()
+
+			partial := streamMessageToContent(m.streamingMessage)
+			m.streamingMessage = nil
+			m.typedStreamMode = false
+			m.textarea.Focus()
+			if strings.TrimSpace(partial) != "" {
+				m.historyForAgent = append(m.historyForAgent, llm.Message{
+					Role:    llm.RoleAssistant,
+					Content: &partial,
+				})
+				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, partial)))
+			}
+
+			if msg.event.Error != nil {
+				if errors.Is(msg.event.Error, context.Canceled) {
+					if m.transientNotice == "" {
+						cmds = append(cmds, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?"))
+					}
+				} else {
+					cmds = append(cmds, printAboveBlock(renderErrorMessage(fmt.Sprintf("Error: %v", msg.event.Error))))
+				}
+			}
+
 		case agent.EventTypeToolStart:
 			if msg.event.Tool != nil {
 				m.tracef("tool_start run=%s tool_id=%s tool=%s args=%q", m.activeRunID, msg.event.Tool.ID, msg.event.Tool.Name, truncateForTrace(msg.event.Tool.ArgsRaw, 400))
@@ -998,8 +1158,10 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 
-		// Continue listening for more events with any accumulated commands
-		cmds = append(cmds, m.listenForToolEvents())
+		// Continue listening for more events with any accumulated commands.
+		if !terminal {
+			cmds = append(cmds, m.listenForToolEvents())
+		}
 		return m, tea.Batch(cmds...)
 
 	case borderedResponseMsg:
@@ -1016,9 +1178,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 		// Reset for next query
-		m.toolsUsedInLastQuery = make(map[string]time.Duration)
-		m.activeTools = make(map[string]*ActiveTool)
-		m.completedTools = []CompletedTool{}
+		m.resetToolTrackingForNextQuery()
 
 		// Handle special command cases
 		if msg.isQuit {
@@ -1151,12 +1311,15 @@ func (m BorderedTUI) View() string {
 	}
 	var b strings.Builder
 
-	// Only show the live region: streaming content (future) + spinner + input box
+	// Only show the live region: streaming content + spinner + input box
 
-	// Show any streaming content (for future implementation)
-	if m.typing.Len() > 0 {
-		b.WriteString(m.typing.String())
-		b.WriteString("\n\n")
+	// Show streaming assistant message while model is generating.
+	if m.streamingMessage != nil {
+		streamContent := streamMessageToContent(m.streamingMessage)
+		if strings.TrimSpace(streamContent) != "" {
+			b.WriteString(renderAssistantMessage(m.renderer, streamContent))
+			b.WriteString("\n\n")
+		}
 	}
 
 	// Show thinking indicator with spinner
@@ -1272,6 +1435,12 @@ func (m *BorderedTUI) showTransientNotice(text string) tea.Cmd {
 	})
 }
 
+func (m *BorderedTUI) resetToolTrackingForNextQuery() {
+	m.toolsUsedInLastQuery = make(map[string]time.Duration)
+	m.activeTools = make(map[string]*ActiveTool)
+	m.completedTools = []CompletedTool{}
+}
+
 func (m *BorderedTUI) sendMessage(runCtx context.Context, runID, input string) tea.Cmd {
 	return func() tea.Msg {
 		// Handle commands (trim leading whitespace)
@@ -1280,27 +1449,34 @@ func (m *BorderedTUI) sendMessage(runCtx context.Context, runID, input string) t
 			return m.handleCommand(trimmed)
 		}
 
-		// Query the agent with event channel in context
-		ctx := runCtx
-		if m.toolEventChan != nil {
-			ctx = context.WithValue(ctx, "toolEventChan", m.toolEventChan)
+		eventChan := m.toolEventChan
+		if eventChan == nil {
+			return borderedResponseMsg{err: fmt.Errorf("internal error: stream channel not initialized")}
 		}
+		defer close(eventChan)
 
 		m.tracef("run_llm_query id=%s provider=%s model=%s", runID, m.provider, m.model)
-		response, err := m.agent.Query(ctx, trimmed)
-
-		// Close the event channel after query completes
-		if m.toolEventChan != nil {
-			close(m.toolEventChan)
-		}
-
+		stream, err := m.agent.QueryStream(runCtx, trimmed)
 		if err != nil {
 			m.tracef("run_end id=%s status=error err=%q", runID, err.Error())
 			return borderedResponseMsg{err: err}
 		}
 
-		m.tracef("run_end id=%s status=ok finish=%q response_len=%d", runID, response.FinishReason, len(response.Content))
-		return borderedResponseMsg{content: response.Content}
+		for {
+			select {
+			case <-runCtx.Done():
+				return nil
+			case event, ok := <-stream:
+				if !ok {
+					return nil
+				}
+				select {
+				case eventChan <- event:
+				case <-runCtx.Done():
+					return nil
+				}
+			}
+		}
 	}
 }
 
