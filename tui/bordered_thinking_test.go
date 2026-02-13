@@ -44,14 +44,6 @@ func TestWrapThinkingTraceWrapsLongLine(t *testing.T) {
 	}
 }
 
-func TestNormalizeForTerminalPrint(t *testing.T) {
-	in := "a\nb\nc"
-	got := normalizeForTerminalPrint(in)
-	if got != "a\r\nb\r\nc" {
-		t.Fatalf("unexpected normalized output: %q", got)
-	}
-}
-
 func TestFormatArgumentsTruncatesLongValues(t *testing.T) {
 	m := &BorderedTUI{}
 	args := map[string]interface{}{

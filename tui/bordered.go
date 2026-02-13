@@ -10,7 +10,9 @@ import (
 	"regexp"
 	"runtime"
 	"sort"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/charmbracelet/bubbles/spinner"
@@ -87,6 +89,18 @@ type BorderedTUI struct {
 	suggestItems   []commandEntry
 	suggestIndex   int
 	commands       []commandEntry
+
+	// Active run control + tracing
+	activeRunCancel context.CancelFunc
+	activeRunID     string
+	runSeq          int
+	traceFile       *os.File
+	tracePath       string
+	traceMu         *sync.Mutex
+
+	// Transient notice displayed above prompt bar
+	transientNotice   string
+	transientNoticeID int
 }
 
 // ActiveTool represents a currently executing tool
@@ -196,7 +210,8 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 
 	// Simple glamour renderer
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		// Use non-colored markdown output so assistant text remains visible across terminal themes.
+		glamour.WithStandardStyle("notty"),
 		glamour.WithWordWrap(assistantMessageWrapWidth),
 	)
 
@@ -240,6 +255,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		tokenRe:              tokenRe,
 		prevInput:            "",
 		baseRequestParams:    agentInstance.GetRequestParams(),
+		traceMu:              &sync.Mutex{},
 		// Autocomplete init
 		suggestVisible: false,
 		suggestItems:   nil,
@@ -255,6 +271,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		{name: "/system", desc: "Show system prompt"},
 		{name: "/thinking", desc: "Toggle model thinking (if supported)"},
 		{name: "/verbose", desc: "Toggle verbose/debug mode"},
+		{name: "/trace", desc: "Show current trace log path"},
 		{name: "/clear", desc: "Clear chat history"},
 		{name: "/attachments", desc: "List attached images"},
 		{name: "/attach", desc: "Attach an image by path"},
@@ -263,6 +280,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 
 	tui.supportsVision = tui.computeVisionSupport()
 	tui.applyModelDefaults()
+	tui.initTraceLogger()
 
 	return tui
 }
@@ -284,6 +302,9 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 	// Print history immediately before TUI starts
 	if historyAgent != nil {
 		session := historyAgent.GetSession()
+		if session != nil {
+			tui.tracef("session_attach id=%s provider=%s model=%s path=%s messages=%d", session.ID, session.Provider, session.Model, session.Path, len(session.Messages))
+		}
 		if session != nil && len(session.Messages) > 0 {
 			// Debug output
 			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
@@ -430,6 +451,20 @@ func wrapThinkingTrace(trace string) string {
 	return strings.Join(wrapped, "\n")
 }
 
+func truncateToWidth(s string, max int) string {
+	if max <= 0 {
+		return ""
+	}
+	r := []rune(s)
+	if len(r) <= max {
+		return s
+	}
+	if max == 1 {
+		return "…"
+	}
+	return string(r[:max-1]) + "…"
+}
+
 func renderCommandMessage(content string) string {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 	return style.Render(content)
@@ -445,16 +480,109 @@ func renderToolMessage(content string) string {
 	return style.Render(content)
 }
 
-func normalizeForTerminalPrint(content string) string {
-	return strings.ReplaceAll(content, "\n", "\r\n")
-}
-
 func printAboveLine(content string) tea.Cmd {
-	return tea.Printf("\r%s\r\n", normalizeForTerminalPrint(content))
+	return tea.Printf("%s\n", content)
 }
 
 func printAboveBlock(content string) tea.Cmd {
-	return tea.Printf("\r%s\r\n\r\n", normalizeForTerminalPrint(content))
+	return tea.Printf("%s\n\n", content)
+}
+
+func isTraceEnabled() bool {
+	v := os.Getenv("SIMPLE_AGENT_TRACE")
+	if strings.EqualFold(v, "true") || v == "1" || strings.EqualFold(v, "yes") {
+		return true
+	}
+	// Enable traces automatically when verbose/debug mode is on.
+	return os.Getenv("SIMPLE_AGENT_DEBUG") == "true"
+}
+
+func (m *BorderedTUI) initTraceLogger() {
+	if !isTraceEnabled() {
+		return
+	}
+	if m.traceFile != nil {
+		return
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	traceDir := filepath.Join(home, ".simple-agent", "traces")
+	if err := os.MkdirAll(traceDir, 0o755); err != nil {
+		return
+	}
+
+	name := fmt.Sprintf("trace_%s_%d.log", time.Now().Format("20060102_150405"), os.Getpid())
+	path := filepath.Join(traceDir, name)
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+
+	m.traceFile = f
+	m.tracePath = path
+	m.tracef("trace_start provider=%s model=%s pid=%d", m.provider, m.model, os.Getpid())
+	fmt.Fprintf(os.Stderr, "[Trace] Logging to %s\n", path)
+}
+
+func (m *BorderedTUI) closeTraceLogger() {
+	if m.traceFile == nil {
+		return
+	}
+	m.tracef("trace_stop")
+	_ = m.traceFile.Close()
+	m.traceFile = nil
+}
+
+func (m *BorderedTUI) tracef(format string, args ...interface{}) {
+	if m.traceFile == nil || m.traceMu == nil {
+		return
+	}
+	line := fmt.Sprintf(format, args...)
+	ts := time.Now().Format(time.RFC3339Nano)
+
+	m.traceMu.Lock()
+	defer m.traceMu.Unlock()
+	_, _ = fmt.Fprintf(m.traceFile, "%s %s\n", ts, line)
+}
+
+func truncateForTrace(s string, limit int) string {
+	clean := strings.Join(strings.Fields(s), " ")
+	if len(clean) <= limit {
+		return clean
+	}
+	if limit <= 1 {
+		return clean[:limit]
+	}
+	return clean[:limit-1] + "…"
+}
+
+func (m *BorderedTUI) beginRun(mode, prompt string) (context.Context, string) {
+	m.runSeq++
+	runID := "run-" + strconv.Itoa(m.runSeq)
+	ctx, cancel := context.WithCancel(context.Background())
+	m.activeRunCancel = cancel
+	m.activeRunID = runID
+	m.tracef("run_start id=%s mode=%s prompt=%q", runID, mode, truncateForTrace(prompt, 512))
+	return ctx, runID
+}
+
+func (m *BorderedTUI) cancelActiveRun(reason string) bool {
+	if m.activeRunCancel == nil {
+		return false
+	}
+	m.tracef("run_cancel_request id=%s reason=%s", m.activeRunID, reason)
+	cancel := m.activeRunCancel
+	m.activeRunCancel = nil
+	cancel()
+	return true
+}
+
+func (m *BorderedTUI) clearActiveRun() {
+	m.activeRunCancel = nil
+	m.activeRunID = ""
 }
 
 func isYoloEnabled() bool {
@@ -499,7 +627,7 @@ func PrintHeader(provider, model string, configuredTools []string) {
 
 	header2 := fmt.Sprintf("%s | %s",
 		toolsStyle.Render(toolSummary),
-		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /thinking, /verbose, /clear, /exit"))
+		cmdStyle.Render("Commands: /help, /tools, /model, /status, /system, /thinking, /verbose, /trace, /clear, /exit"))
 
 	fmt.Println(header1)
 	fmt.Println(header2)
@@ -575,10 +703,17 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case clearTransientNoticeMsg:
+		if msg.id == m.transientNoticeID {
+			m.transientNotice = ""
+		}
+		return m, nil
+
 	case modelSelectedMsg:
 		// Model was selected, update our state
 		m.provider = msg.provider
 		m.model = msg.model
+		m.tracef("model_switch provider=%s model=%s", msg.provider, msg.model)
 
 		// Save to config if we have a config manager
 		if m.configManager != nil {
@@ -617,8 +752,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update textarea width to match terminal minus borders and padding
 		// The -6 accounts for: border (2) + padding (2) + some margin (2)
 		textareaWidth := m.width - 6
-		if textareaWidth < 20 {
-			textareaWidth = 20 // Minimum width
+		if textareaWidth < 1 {
+			textareaWidth = 1
 		}
 		m.textarea.SetWidth(textareaWidth)
 
@@ -634,7 +769,23 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		switch msg.Type {
-		case tea.KeyCtrlC, tea.KeyCtrlQ, tea.KeyEsc:
+		case tea.KeyCtrlC, tea.KeyCtrlQ:
+			m.tracef("app_quit key=%s", msg.Type.String())
+			m.closeTraceLogger()
+			return m, tea.Quit
+
+		case tea.KeyEsc:
+			if m.isThinking {
+				if m.cancelActiveRun("esc") {
+					m.isThinking = false
+					m.showingTools = false
+					m.textarea.Focus()
+					return m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?")
+				}
+				return m, nil
+			}
+			m.tracef("app_quit key=esc")
+			m.closeTraceLogger()
 			return m, tea.Quit
 
 		case tea.KeyUp:
@@ -737,12 +888,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.showingTools = false
 
 					if len(m.attachments) > 0 && m.supportsVision {
-						cmds = append(cmds, m.sendMultimodal(value))
+						runCtx, runID := m.beginRun("multimodal", value)
+						cmds = append(cmds, m.sendMultimodal(runCtx, runID, value))
 						cmds = append(cmds, m.spinner.Tick)
 					} else {
 						// Create event channel and store it
 						m.toolEventChan = make(chan agent.StreamEvent, 100)
-						cmds = append(cmds, m.sendMessage(value))
+						runCtx, runID := m.beginRun("query", value)
+						cmds = append(cmds, m.sendMessage(runCtx, runID, value))
 						cmds = append(cmds, m.spinner.Tick)
 						cmds = append(cmds, m.listenForToolEvents())
 					}
@@ -763,6 +916,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.event.Type {
 		case agent.EventTypeToolStart:
 			if msg.event.Tool != nil {
+				m.tracef("tool_start run=%s tool_id=%s tool=%s args=%q", m.activeRunID, msg.event.Tool.ID, msg.event.Tool.Name, truncateForTrace(msg.event.Tool.ArgsRaw, 400))
 				// Keep showing "Thinking..." when tools start - show continuous indicator
 				m.isThinking = true
 				m.showingTools = true
@@ -794,7 +948,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				tool.LastUpdate = time.Now()
 			}
 
-		case agent.EventTypeToolResult:
+		case agent.EventTypeToolResult, agent.EventTypeToolCancel, agent.EventTypeToolTimeout:
 			if msg.event.Tool != nil {
 				// Move from active to completed
 				if activeTool := m.activeTools[msg.event.Tool.ID]; activeTool != nil {
@@ -816,6 +970,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Print tool completion message immediately
 					if msg.event.Tool.Error != nil {
+						m.tracef("tool_end run=%s tool_id=%s tool=%s status=error duration_ms=%d err=%q", m.activeRunID, msg.event.Tool.ID, activeTool.Name, duration.Milliseconds(), msg.event.Tool.Error.Error())
 						// Track error
 						m.toolErrors = append(m.toolErrors, ToolError{
 							ID:    msg.event.Tool.ID,
@@ -824,9 +979,17 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							Time:  time.Now(),
 						})
 
-						errorMsg := fmt.Sprintf("❌ Tool %s failed: %v", activeTool.Name, msg.event.Tool.Error)
+						prefix := "❌"
+						switch msg.event.Type {
+						case agent.EventTypeToolCancel:
+							prefix = "🛑"
+						case agent.EventTypeToolTimeout:
+							prefix = "⏱️"
+						}
+						errorMsg := fmt.Sprintf("%s Tool %s failed: %v", prefix, activeTool.Name, msg.event.Tool.Error)
 						cmds = append(cmds, printAboveLine(renderToolMessage(errorMsg)))
 					} else {
+						m.tracef("tool_end run=%s tool_id=%s tool=%s status=ok duration_ms=%d", m.activeRunID, msg.event.Tool.ID, activeTool.Name, duration.Milliseconds())
 						// Print success message with duration
 						successMsg := fmt.Sprintf("✅ Tool %s completed in %v", activeTool.Name, duration.Round(time.Millisecond))
 						cmds = append(cmds, printAboveLine(renderToolMessage(successMsg)))
@@ -842,6 +1005,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case borderedResponseMsg:
 		m.isThinking = false
 		m.showingTools = false
+		m.clearActiveRun()
 
 		// Clear attachments if requested (multimodal success)
 		if msg.clearAttachments {
@@ -858,6 +1022,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Handle special command cases
 		if msg.isQuit {
+			m.tracef("app_quit command=/exit")
+			m.closeTraceLogger()
 			return m, tea.Quit
 		}
 
@@ -884,6 +1050,13 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Handle normal messages
 		if msg.err != nil {
+			if errors.Is(msg.err, context.Canceled) {
+				m.textarea.Focus()
+				if m.transientNotice == "" {
+					return m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?")
+				}
+				return m, nil
+			}
 			// Print error message
 			return m, printAboveBlock(renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
 		} else if msg.content != "" {
@@ -916,6 +1089,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Apply selected provider/model
 		m.provider = msg.provider
 		m.model = msg.model
+		m.tracef("model_switch provider=%s model=%s", msg.provider, msg.model)
 		// Save to config if available
 		if m.configManager != nil {
 			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
@@ -1001,73 +1175,51 @@ func (m BorderedTUI) View() string {
 		b.WriteString("\n")
 	}
 
-	// Create model info string that will appear above the input box
-	// Use gray for labels and blue for the actual model/provider names
+	// Create model info string that will appear above the input box.
 	grayStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	blueStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("75")) // Same blue as header
-
-	// Append vision capability and attachments indicator
 	visionState := "Off"
 	if m.supportsVision {
 		visionState = "On"
 	}
-	thinkingInfo := ""
-	thinkingState := ""
+	modelParts := []string{
+		fmt.Sprintf("Model: %s", m.model),
+		fmt.Sprintf("Provider: %s", m.provider),
+		fmt.Sprintf("Vision: %s", visionState),
+	}
 	if supportsThinkingToggle(m.provider, m.model) {
-		thinkingState = "Off"
+		thinkingState := "Off"
 		if m.thinkingEnabled {
 			thinkingState = "On"
 		}
-		thinkingInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Thinking:"), blueStyle.Render(thinkingState))
+		modelParts = append(modelParts, fmt.Sprintf("Thinking: %s", thinkingState))
 	}
-	attachInfo := ""
 	if len(m.attachments) > 0 {
-		attachInfo = fmt.Sprintf(" %s %d", grayStyle.Render("| Attached:"), len(m.attachments))
+		modelParts = append(modelParts, fmt.Sprintf("Attached: %d", len(m.attachments)))
 	}
-	yoloInfo := ""
 	if m.yoloEnabled {
-		yoloStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
-		yoloInfo = fmt.Sprintf(" %s %s", grayStyle.Render("| Bash:"), yoloStyle.Render("YOLO"))
+		modelParts = append(modelParts, "Bash: YOLO")
 	}
-	modelInfo := fmt.Sprintf("%s %s %s %s %s %s%s%s%s",
-		grayStyle.Render("Model:"),
-		blueStyle.Render(m.model),
-		grayStyle.Render("| Provider:"),
-		blueStyle.Render(m.provider),
-		grayStyle.Render("| Vision:"),
-		blueStyle.Render(visionState),
-		thinkingInfo,
-		attachInfo,
-		yoloInfo)
+	modelInfo := strings.Join(modelParts, " | ")
 
-	// Calculate the right alignment padding
-	// The border box width is m.width - 2, so we align to that
+	// Keep live lines strictly within terminal width; wrapped live lines can
+	// break Bubble Tea's redraw bookkeeping when resizing.
 	boxWidth := m.width - 2
-	if boxWidth < 40 {
-		boxWidth = 40 // Minimum width
+	if boxWidth < 1 {
+		boxWidth = 1
 	}
-
-	// Calculate the actual width of the rendered text (without ANSI codes)
-	plainTextWidth := len("Model: ") + len(m.model) + len(" | Provider: ") + len(m.provider) + len(" | Vision: ") + len(visionState)
-	if thinkingInfo != "" {
-		plainTextWidth += len(" | Thinking: ") + len(thinkingState)
-	}
-	if attachInfo != "" {
-		plainTextWidth += len(" | Attached: ") + len(fmt.Sprintf("%d", len(m.attachments)))
-	}
-	if yoloInfo != "" {
-		plainTextWidth += len(" | Bash: ") + len("YOLO")
-	}
-
-	// Right-align the model info to match the box width
-	paddingNeeded := boxWidth - plainTextWidth
-	if paddingNeeded > 0 {
-		modelInfo = strings.Repeat(" ", paddingNeeded) + modelInfo
-	}
+	modelInfo = truncateToWidth(modelInfo, boxWidth-1)
 
 	// Add the model info line above the input box
-	b.WriteString(modelInfo)
+	b.WriteString(grayStyle.Render(modelInfo))
 	b.WriteString("\n")
+
+	// Optional transient notice line above prompt bar
+	if m.transientNotice != "" {
+		noticeStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Bold(true)
+		notice := truncateToWidth(m.transientNotice, boxWidth-1)
+		b.WriteString(noticeStyle.Render(notice))
+		b.WriteString("\n")
+	}
 
 	// Input area with border and prompt
 	inputContent := m.textarea.View()
@@ -1110,7 +1262,17 @@ func (m BorderedTUI) View() string {
 	return b.String()
 }
 
-func (m *BorderedTUI) sendMessage(input string) tea.Cmd {
+func (m *BorderedTUI) showTransientNotice(text string) tea.Cmd {
+	m.transientNotice = strings.TrimSpace(text)
+	m.transientNoticeID++
+	currentID := m.transientNoticeID
+
+	return tea.Tick(4*time.Second, func(time.Time) tea.Msg {
+		return clearTransientNoticeMsg{id: currentID}
+	})
+}
+
+func (m *BorderedTUI) sendMessage(runCtx context.Context, runID, input string) tea.Cmd {
 	return func() tea.Msg {
 		// Handle commands (trim leading whitespace)
 		trimmed := strings.TrimSpace(input)
@@ -1119,11 +1281,12 @@ func (m *BorderedTUI) sendMessage(input string) tea.Cmd {
 		}
 
 		// Query the agent with event channel in context
-		ctx := context.Background()
+		ctx := runCtx
 		if m.toolEventChan != nil {
 			ctx = context.WithValue(ctx, "toolEventChan", m.toolEventChan)
 		}
 
+		m.tracef("run_llm_query id=%s provider=%s model=%s", runID, m.provider, m.model)
 		response, err := m.agent.Query(ctx, trimmed)
 
 		// Close the event channel after query completes
@@ -1132,19 +1295,29 @@ func (m *BorderedTUI) sendMessage(input string) tea.Cmd {
 		}
 
 		if err != nil {
+			m.tracef("run_end id=%s status=error err=%q", runID, err.Error())
 			return borderedResponseMsg{err: err}
 		}
 
+		m.tracef("run_end id=%s status=ok finish=%q response_len=%d", runID, response.FinishReason, len(response.Content))
 		return borderedResponseMsg{content: response.Content}
 	}
 }
 
 // sendMultimodal sends a single-turn multimodal request using provider helpers
-func (m *BorderedTUI) sendMultimodal(input string) tea.Cmd {
+func (m *BorderedTUI) sendMultimodal(runCtx context.Context, runID, input string) tea.Cmd {
 	return func() tea.Msg {
+		select {
+		case <-runCtx.Done():
+			m.tracef("run_end id=%s status=cancelled before_multimodal_call", runID)
+			return borderedResponseMsg{err: context.Canceled}
+		default:
+		}
+
 		// Ensure client supports multimodal
 		mm, ok := any(m.llmClient).(llm.MultimodalClient)
 		if !ok {
+			m.tracef("run_end id=%s status=error err=%q", runID, "this provider client does not support images")
 			return borderedResponseMsg{err: fmt.Errorf("this provider client does not support images")}
 		}
 
@@ -1161,6 +1334,7 @@ func (m *BorderedTUI) sendMultimodal(input string) tea.Cmd {
 		// Call provider
 		out, err := mm.ChatWithImages(prompt, imgs, map[string]interface{}{})
 		if err != nil {
+			m.tracef("run_end id=%s status=error err=%q", runID, err.Error())
 			return borderedResponseMsg{err: err}
 		}
 
@@ -1172,6 +1346,7 @@ func (m *BorderedTUI) sendMultimodal(input string) tea.Cmd {
 		}
 		m.agent.SetMemory(mem)
 
+		m.tracef("run_end id=%s status=ok mode=multimodal response_len=%d", runID, len(out))
 		return borderedResponseMsg{content: out, clearAttachments: true}
 	}
 }
@@ -1198,6 +1373,7 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
   /system  - Show system prompt
   /thinking [on|off] - Toggle model thinking (if supported)
   /verbose - Toggle verbose/debug mode
+  /trace   - Show active trace log path
   /clear   - Clear chat history
   /attachments - List attached images
   /attach <path> - Attach an image by path
@@ -1205,6 +1381,7 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
   /exit    - Exit application
 
 Keyboard shortcuts:
+  Esc    - Interrupt active run (when model/tools are running)
   Ctrl+C - Quit
   Ctrl+L - Clear chat
   Enter  - Send message`
@@ -1239,6 +1416,9 @@ Keyboard shortcuts:
 		if m.yoloEnabled {
 			statusMsg = fmt.Sprintf("%s\n  Bash: YOLO (UNSAFE)", statusMsg)
 		}
+		if m.tracePath != "" {
+			statusMsg = fmt.Sprintf("%s\n  Trace: %s", statusMsg, m.tracePath)
+		}
 		if supportsThinkingToggle(m.provider, m.model) {
 			thinkingState := "Off"
 			if m.thinkingEnabled {
@@ -1272,11 +1452,19 @@ Keyboard shortcuts:
 		currentDebug := os.Getenv("SIMPLE_AGENT_DEBUG")
 		if currentDebug == "true" {
 			os.Unsetenv("SIMPLE_AGENT_DEBUG")
+			m.tracef("verbose_toggle state=off")
 			return borderedResponseMsg{content: "Verbose mode: OFF", isCommand: true}
 		} else {
 			os.Setenv("SIMPLE_AGENT_DEBUG", "true")
+			m.initTraceLogger()
+			m.tracef("verbose_toggle state=on")
 			return borderedResponseMsg{content: "Verbose mode: ON\nDebug output will be shown in the terminal", isCommand: true}
 		}
+	case "/trace":
+		if m.tracePath == "" {
+			return borderedResponseMsg{content: "Trace logging is OFF (set SIMPLE_AGENT_TRACE=1 or use --verbose).", isCommand: true}
+		}
+		return borderedResponseMsg{content: fmt.Sprintf("Trace log: %s", m.tracePath), isCommand: true}
 	case "/attachments":
 		if len(m.attachments) == 0 {
 			return borderedResponseMsg{content: "No images attached", isCommand: true}
@@ -1391,6 +1579,10 @@ type toolEventMsg struct {
 	event agent.StreamEvent
 }
 
+type clearTransientNoticeMsg struct {
+	id int
+}
+
 // adjustTextareaHeight dynamically adjusts the textarea height based on content
 func (m *BorderedTUI) adjustTextareaHeight() {
 	content := m.textarea.Value()
@@ -1403,8 +1595,8 @@ func (m *BorderedTUI) adjustTextareaHeight() {
 	lines := 1
 	currentLineLength := 0
 	textareaWidth := m.width - 8 // Account for borders, padding, and prompt
-	if textareaWidth < 20 {
-		textareaWidth = 20
+	if textareaWidth < 1 {
+		textareaWidth = 1
 	}
 
 	for _, char := range content {
