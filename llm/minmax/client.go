@@ -195,6 +195,15 @@ func (c *Client) ChatStream(ctx context.Context, request *llm.ChatRequest) (<-ch
 	go func() {
 		defer close(events)
 		defer resp.Body.Close()
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				_ = resp.Body.Close()
+			case <-done:
+			}
+		}()
+		defer close(done)
 
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
