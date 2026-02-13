@@ -60,3 +60,40 @@ func TestNewShellTool_YoloEnablesAllowAll(t *testing.T) {
 		t.Fatalf("expected allowAll=true when SIMPLE_AGENT_YOLO is set")
 	}
 }
+
+func TestBashTool_BlocksRiskyInstaloaderWithoutFailFastFlags(t *testing.T) {
+	tool := &BashTool{
+		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
+		allowedCommands: nil,
+		allowAll:        true,
+	}
+
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"instaloader --stories --highlights xiimenahm","timeout":30}`))
+	if err == nil {
+		t.Fatalf("expected risky command error, got nil")
+	}
+
+	te, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected *ToolError, got %T (%v)", err, err)
+	}
+	if te.Code != "COMMAND_RISKY" {
+		t.Fatalf("expected COMMAND_RISKY, got %q", te.Code)
+	}
+}
+
+func TestBashTool_AllowsInstaloaderWithFailFastFlags(t *testing.T) {
+	tool := &BashTool{
+		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
+		allowedCommands: nil,
+		allowAll:        true,
+	}
+
+	out, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"instaloader --stories --highlights --max-connection-attempts 1 --abort-on 429 --help","timeout":30}`))
+	if err != nil {
+		t.Fatalf("expected nil error, got %T (%v)", err, err)
+	}
+	if !strings.Contains(out, "Exit Code: 0") {
+		t.Fatalf("expected successful exit code in output, got:\n%s", out)
+	}
+}

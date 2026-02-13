@@ -48,6 +48,11 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (string,
 		return "", NewToolError("VALIDATION_FAILED", "Command cannot be empty")
 	}
 
+	// Guard known commands that can block for a long time in retry loops.
+	if err := validateCommandSafety(command); err != nil {
+		return "", err
+	}
+
 	// Validate timeout
 	timeout := args.Timeout
 	if timeout <= 0 {
@@ -114,8 +119,16 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (string,
 
 	// Check for errors
 	if err != nil {
+		if cmdCtx.Err() == context.Canceled {
+			return "", NewToolError("EXECUTION_CANCELLED", "Command was cancelled").
+				WithDetail("command", command).
+				WithDetail("output", result)
+		}
 		if cmdCtx.Err() == context.DeadlineExceeded {
-			return result + fmt.Sprintf("\nCommand timed out after %d seconds", timeout), nil
+			return "", NewToolError("EXECUTION_TIMEOUT", fmt.Sprintf("Command timed out after %d seconds", timeout)).
+				WithDetail("command", command).
+				WithDetail("timeout_seconds", timeout).
+				WithDetail("output", result)
 		}
 
 		if exitErr, ok := err.(*exec.ExitError); ok {
@@ -130,6 +143,29 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (string,
 	}
 
 	return result, nil
+}
+
+func validateCommandSafety(command string) error {
+	lower := strings.ToLower(command)
+
+	// Instaloader can enter very long retry/backoff loops (e.g. 429 -> retry in 30 min)
+	// when stories/highlights are requested without fail-fast flags.
+	if strings.Contains(lower, "instaloader") &&
+		(strings.Contains(lower, "--stories") || strings.Contains(lower, "--highlights")) {
+		hasMaxAttempts := strings.Contains(lower, "--max-connection-attempts")
+		hasAbortOn := strings.Contains(lower, "--abort-on")
+		if !hasMaxAttempts || !hasAbortOn {
+			return NewToolError(
+				"COMMAND_RISKY",
+				"Instaloader stories/highlights may block for long retries; add fail-fast flags",
+			).
+				WithDetail("required_flags", "--max-connection-attempts 1 --abort-on 429").
+				WithDetail("recommended_flags", "--max-connection-attempts 1 --abort-on 429 --quiet").
+				WithDetail("example", "instaloader --stories --highlights --max-connection-attempts 1 --abort-on 429 --quiet <profile>")
+		}
+	}
+
+	return nil
 }
 
 func (t *BashTool) isCommandAllowed(cmd string) bool {
