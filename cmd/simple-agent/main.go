@@ -21,6 +21,7 @@ import (
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
 	"github.com/nachoal/simple-agent-go/llm/groq"
 	"github.com/nachoal/simple-agent-go/llm/lmstudio"
+	"github.com/nachoal/simple-agent-go/llm/minmax"
 	"github.com/nachoal/simple-agent-go/llm/moonshot"
 	"github.com/nachoal/simple-agent-go/llm/ollama"
 	"github.com/nachoal/simple-agent-go/llm/openai"
@@ -90,7 +91,7 @@ func init() {
 	toolinit.RegisterAll()
 
 	// Global flags
-	rootCmd.PersistentFlags().StringVar(&provider, "provider", "", "LLM provider (openai, anthropic, moonshot, etc)")
+	rootCmd.PersistentFlags().StringVar(&provider, "provider", "", "LLM provider (openai, anthropic, minmax, moonshot, etc)")
 	rootCmd.PersistentFlags().StringVar(&model, "model", "", "Model to use")
 	rootCmd.PersistentFlags().BoolVarP(&verbose, "verbose", "v", false, "Enable verbose output")
 	rootCmd.PersistentFlags().BoolVar(&yolo, "yolo", false, "Allow the bash tool to run any command (DANGEROUS)")
@@ -170,15 +171,19 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create initial LLM client
-	llmClient, err := createLLMClient(provider, model)
+	providerSetByFlag := cmd.Flags().Changed("provider")
+	llmClient, provider, model, fallbackMsg, err := createLLMClientWithStartupFallback(provider, model, !providerSetByFlag)
 	if err != nil {
 		return fmt.Errorf("failed to create %s client: %w", provider, err)
+	}
+	if fallbackMsg != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
 	}
 	defer llmClient.Close()
 
 	// Create all provider clients for model selection
 	providers := make(map[string]llm.Client)
-	providerNames := []string{"openai", "anthropic", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
+	providerNames := []string{"openai", "anthropic", "minmax", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
 
 	// Debug: count successful providers
 	successCount := 0
@@ -267,9 +272,14 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				model = session.Model
 				// Recreate client with session's provider/model
 				llmClient.Close()
-				llmClient, err = createLLMClient(provider, model)
+				llmClient, provider, model, fallbackMsg, err = createLLMClientWithStartupFallback(provider, model, true)
 				if err != nil {
 					return fmt.Errorf("failed to create %s client: %w", provider, err)
+				}
+				if fallbackMsg != "" {
+					fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
+					session.Provider = provider
+					session.Model = model
 				}
 				agentInstance = agent.New(llmClient,
 					agentOpts...,
@@ -352,9 +362,14 @@ func runTUI(cmd *cobra.Command, args []string) error {
 			model = session.Model
 			// Recreate client with session's provider/model
 			llmClient.Close()
-			llmClient, err = createLLMClient(provider, model)
+			llmClient, provider, model, fallbackMsg, err = createLLMClientWithStartupFallback(provider, model, true)
 			if err != nil {
 				return fmt.Errorf("failed to create %s client: %w", provider, err)
+			}
+			if fallbackMsg != "" {
+				fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
+				session.Provider = provider
+				session.Model = model
 			}
 			agentInstance = agent.New(llmClient,
 				agentOpts...,
@@ -440,9 +455,13 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create LLM client
-	llmClient, err := createLLMClient(provider, model)
+	providerSetByFlag := cmd.Flags().Changed("provider")
+	llmClient, _, _, fallbackMsg, err := createLLMClientWithStartupFallback(provider, model, !providerSetByFlag)
 	if err != nil {
 		return fmt.Errorf("failed to create LLM client: %w", err)
+	}
+	if fallbackMsg != "" {
+		fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
 	}
 	defer llmClient.Close()
 
@@ -610,6 +629,9 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 	case "anthropic", "claude":
 		return anthropic.NewClient(llm.WithModel(model))
 
+	case "minmax", "minimax":
+		return minmax.NewClient(llm.WithModel(model))
+
 	case "moonshot", "kimi":
 		return moonshot.NewClient(llm.WithModel(model))
 
@@ -633,10 +655,58 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 	}
 }
 
+func createLLMClientWithStartupFallback(provider, model string, allowFallback bool) (llm.Client, string, string, string, error) {
+	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	chosenModel := strings.TrimSpace(model)
+	if chosenModel == "" {
+		chosenModel = getDefaultModel(normalizedProvider)
+	}
+
+	client, err := createLLMClient(normalizedProvider, chosenModel)
+	if err == nil {
+		return client, normalizedProvider, chosenModel, "", nil
+	}
+
+	if !allowFallback || !isLMStudioProvider(normalizedProvider) {
+		return nil, normalizedProvider, chosenModel, "", err
+	}
+
+	fallbackProvider := "openai"
+	fallbackModel := getDefaultModel(fallbackProvider)
+	fallbackClient, fallbackErr := createLLMClient(fallbackProvider, fallbackModel)
+	if fallbackErr != nil {
+		return nil, normalizedProvider, chosenModel, "", fmt.Errorf(
+			"%w (fallback to %s/%s also failed: %v)",
+			err,
+			fallbackProvider,
+			fallbackModel,
+			fallbackErr,
+		)
+	}
+
+	msg := fmt.Sprintf(
+		"LM Studio is unavailable for provider %q; using %s (%s) instead",
+		normalizedProvider,
+		fallbackProvider,
+		fallbackModel,
+	)
+	return fallbackClient, fallbackProvider, fallbackModel, msg, nil
+}
+
+func isLMStudioProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "lmstudio", "lm-studio":
+		return true
+	default:
+		return false
+	}
+}
+
 func getDefaultModel(provider string) string {
 	defaults := map[string]string{
 		"openai":     "gpt-4-turbo-preview",
 		"anthropic":  "claude-3-opus-20240229",
+		"minmax":     "MiniMax-M2.5",
 		"moonshot":   "moonshot-v1-8k",
 		"deepseek":   "deepseek-chat",
 		"perplexity": "llama-3.1-sonar-huge-128k-online",

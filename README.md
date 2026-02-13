@@ -11,7 +11,7 @@ A blazing-fast, elegant AI agent framework for Go with a beautiful terminal UI. 
 
 - 🚀 **Lightning Fast** - Leverages Go's concurrency for parallel tool execution
 - 🎨 **Beautiful TUI** - Elegant terminal interface with markdown rendering and animated spinners
-- 🤖 **8 LLM Providers** - OpenAI, Anthropic, Google, local models, and more
+- 🤖 **9 LLM Providers** - OpenAI, Anthropic, MiniMax, local models, and more
 - 🛠️ **Rich Tool System** - File operations, bash commands, web search, and more
 - 📦 **Zero Dependencies** - Single static binary, runs anywhere
 - 🎯 **Smart Interactions** - ReAct prompting and native function calling
@@ -80,6 +80,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 # Optional providers
 GOOGLE_API_KEY=...          # For Gemini models
+MINIMAX_API_KEY=...         # MiniMax text models (M2.5, M2.5-lightning, etc)
 MOONSHOT_API_KEY=...        # Kimi (Chinese language)
 DEEPSEEK_API_KEY=...        # Code-focused
 GROQ_API_KEY=...           # Fast inference
@@ -154,6 +155,7 @@ The TUI provides a delightful chat experience:
 |----------|----------|----------------|
 | **OpenAI** | General purpose | gpt-4-turbo, gpt-3.5-turbo |
 | **Anthropic** | Complex reasoning | claude-3-opus, claude-3-sonnet |
+| **MiniMax** | Coding and long context | MiniMax-M2.5, MiniMax-M2.5-lightning |
 | **Google** | Multimodal tasks | gemini-1.5-pro, gemini-1.5-flash |
 | **Moonshot** | Chinese language | moonshot-v1-8k, moonshot-v1-128k |
 | **DeepSeek** | Code generation | deepseek-chat, deepseek-coder |

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strings"
 	"time"
 
@@ -17,12 +18,16 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/reflow/wordwrap"
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/history"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools/registry"
 )
+
+const assistantMessageWrapWidth = 74
+const maxToolArgDisplayLen = 140
 
 // BorderedTUI is a minimal TUI that matches the Python bordered_interface.py
 type BorderedTUI struct {
@@ -192,7 +197,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	// Simple glamour renderer
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(74),
+		glamour.WithWordWrap(assistantMessageWrapWidth),
 	)
 
 	// Initialize spinner
@@ -338,6 +343,37 @@ func renderUserMessage(content string) string {
 }
 
 func renderAssistantMessage(renderer *glamour.TermRenderer, content string) string {
+	thinkingTrace, finalContent := splitThinkingTrace(content)
+
+	if thinkingTrace != "" {
+		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Bold(true)
+		traceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+		wrappedTrace := wrapThinkingTrace(thinkingTrace)
+
+		traceBlock := fmt.Sprintf("%s\n%s\n%s",
+			tagStyle.Render("<thinking traces>"),
+			traceStyle.Render(wrappedTrace),
+			tagStyle.Render("</thinking traces>"),
+		)
+
+		sections := []string{traceBlock}
+
+		if strings.TrimSpace(finalContent) != "" {
+			if renderer != nil {
+				rendered, err := renderer.Render(finalContent)
+				if err == nil {
+					sections = append(sections, strings.TrimRight(rendered, "\n"))
+				} else {
+					sections = append(sections, finalContent)
+				}
+			} else {
+				sections = append(sections, finalContent)
+			}
+		}
+
+		return fmt.Sprintf("🤖 Assistant:\n%s", strings.Join(sections, "\n\n"))
+	}
+
 	if renderer != nil {
 		rendered, err := renderer.Render(content)
 		if err == nil {
@@ -346,6 +382,52 @@ func renderAssistantMessage(renderer *glamour.TermRenderer, content string) stri
 	}
 	// Fallback without glamour
 	return fmt.Sprintf("🤖 Assistant: %s", content)
+}
+
+var thinkTraceRe = regexp.MustCompile(`(?is)<think>\s*(.*?)\s*</think>`)
+
+func splitThinkingTrace(content string) (thinkingTrace string, finalContent string) {
+	if strings.TrimSpace(content) == "" {
+		return "", ""
+	}
+
+	matches := thinkTraceRe.FindAllStringSubmatch(content, -1)
+	if len(matches) == 0 {
+		return "", content
+	}
+
+	traces := make([]string, 0, len(matches))
+	for _, m := range matches {
+		if len(m) < 2 {
+			continue
+		}
+		trace := strings.TrimSpace(m[1])
+		if trace != "" {
+			traces = append(traces, trace)
+		}
+	}
+
+	remaining := strings.TrimSpace(thinkTraceRe.ReplaceAllString(content, ""))
+	return strings.Join(traces, "\n\n"), remaining
+}
+
+func wrapThinkingTrace(trace string) string {
+	if strings.TrimSpace(trace) == "" {
+		return ""
+	}
+
+	lines := strings.Split(trace, "\n")
+	wrapped := make([]string, 0, len(lines))
+
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, wordwrap.String(line, assistantMessageWrapWidth))
+	}
+
+	return strings.Join(wrapped, "\n")
 }
 
 func renderCommandMessage(content string) string {
@@ -361,6 +443,18 @@ func renderErrorMessage(content string) string {
 func renderToolMessage(content string) string {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
 	return style.Render(content)
+}
+
+func normalizeForTerminalPrint(content string) string {
+	return strings.ReplaceAll(content, "\n", "\r\n")
+}
+
+func printAboveLine(content string) tea.Cmd {
+	return tea.Printf("\r%s\r\n", normalizeForTerminalPrint(content))
+}
+
+func printAboveBlock(content string) tea.Cmd {
+	return tea.Printf("\r%s\r\n\r\n", normalizeForTerminalPrint(content))
 }
 
 func isYoloEnabled() bool {
@@ -514,7 +608,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// Print model switch message
 		m.textarea.Focus()
-		return m, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
+		return m, printAboveBlock(renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -625,7 +719,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 					// Normal or multimodal message
 					// Print user message to stdout
-					cmds = append(cmds, tea.Printf("%s\n\n", renderUserMessage(value)))
+					cmds = append(cmds, printAboveBlock(renderUserMessage(value)))
 
 					// Add to history for agent context
 					m.historyForAgent = append(m.historyForAgent, llm.Message{
@@ -689,7 +783,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Print tool start message immediately
 				argStr := m.formatArguments(msg.event.Tool.Args)
 				toolStartMsg := fmt.Sprintf("🔧 Calling tool: %s %s", msg.event.Tool.Name, argStr)
-				cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(toolStartMsg)))
+				cmds = append(cmds, printAboveLine(renderToolMessage(toolStartMsg)))
 			}
 
 		case agent.EventTypeToolProgress:
@@ -731,11 +825,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						})
 
 						errorMsg := fmt.Sprintf("❌ Tool %s failed: %v", activeTool.Name, msg.event.Tool.Error)
-						cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(errorMsg)))
+						cmds = append(cmds, printAboveLine(renderToolMessage(errorMsg)))
 					} else {
 						// Print success message with duration
 						successMsg := fmt.Sprintf("✅ Tool %s completed in %v", activeTool.Name, duration.Round(time.Millisecond))
-						cmds = append(cmds, tea.Printf("%s\n", renderToolMessage(successMsg)))
+						cmds = append(cmds, printAboveLine(renderToolMessage(successMsg)))
 					}
 				}
 			}
@@ -791,12 +885,12 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Handle normal messages
 		if msg.err != nil {
 			// Print error message
-			return m, tea.Printf("%s\n\n", renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
+			return m, printAboveBlock(renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
 		} else if msg.content != "" {
 			if msg.isCommand {
 				// Print command output
 				m.textarea.Focus()
-				return m, tea.Printf("%s\n\n", renderCommandMessage(msg.content))
+				return m, printAboveBlock(renderCommandMessage(msg.content))
 			} else {
 				// Print assistant message
 				content := msg.content
@@ -805,7 +899,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Content: &content,
 				})
 				m.textarea.Focus()
-				return m, tea.Printf("%s\n\n", renderAssistantMessage(m.renderer, msg.content))
+				return m, printAboveBlock(renderAssistantMessage(m.renderer, msg.content))
 			}
 		}
 		m.textarea.Focus()
@@ -849,7 +943,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showModelSelector = false
 		m.selector = nil
 		m.textarea.Focus()
-		return m, tea.Batch(tea.ExitAltScreen, tea.Printf("%s\n\n", renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))))
+		return m, tea.Batch(tea.ExitAltScreen, printAboveBlock(renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))))
 
 	}
 
@@ -866,7 +960,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Warn if user pasted image-like content when vision is not supported
 			if detectsImageRef(m.textarea.Value()) {
-				cmds = append(cmds, tea.Printf("%s\n\n", renderCommandMessage("This model does not support vision.")))
+				cmds = append(cmds, printAboveBlock(renderCommandMessage("This model does not support vision.")))
 			}
 		}
 		// Update slash-command suggestions
@@ -1341,9 +1435,19 @@ func (m *BorderedTUI) formatArguments(args map[string]interface{}) string {
 		return ""
 	}
 
-	var parts []string
-	for k, v := range args {
-		parts = append(parts, fmt.Sprintf("%s=%v", k, v))
+	keys := make([]string, 0, len(args))
+	for k := range args {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	parts := make([]string, 0, len(keys))
+	for _, k := range keys {
+		v := strings.Join(strings.Fields(fmt.Sprintf("%v", args[k])), " ")
+		if len(v) > maxToolArgDisplayLen {
+			v = v[:maxToolArgDisplayLen-1] + "…"
+		}
+		parts = append(parts, fmt.Sprintf("%s=%s", k, v))
 	}
 
 	return fmt.Sprintf("(%s)", strings.Join(parts, ", "))
