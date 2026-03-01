@@ -408,8 +408,28 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 
 			// Create assistant message from collected content
 			contentStr := fullContent.String()
-			var contentPtr *string
 			toolCalls := sanitizeLLMToolCalls(toLLMToolCallsFromStream(streamToolCalls))
+
+			// Some providers emit tool calls as plain JSON in streamed content
+			// instead of native delta.tool_calls. Mirror non-stream fallback parsing.
+			if len(toolCalls) == 0 && strings.TrimSpace(contentStr) != "" {
+				if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+					fmt.Fprintf(os.Stderr, "\n[Agent] Stream had no native tool calls, attempting content parse:\n%s\n", contentStr)
+				}
+
+				parsedToolCalls := sanitizeLLMToolCalls(a.parseToolCallsFromContent(contentStr))
+				if len(parsedToolCalls) > 0 {
+					toolCalls = parsedToolCalls
+					contentStr = ""
+					if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+						fmt.Fprintf(os.Stderr, "[Agent] Parsed %d tool calls from stream content\n", len(toolCalls))
+					}
+				} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+					fmt.Fprintf(os.Stderr, "[Agent] No tool calls could be parsed from stream content\n")
+				}
+			}
+
+			var contentPtr *string
 			if contentStr != "" || len(toolCalls) == 0 {
 				contentPtr = &contentStr
 			}
