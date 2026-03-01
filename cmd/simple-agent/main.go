@@ -15,6 +15,10 @@ import (
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/history"
+	"github.com/nachoal/simple-agent-go/internal/models"
+	"github.com/nachoal/simple-agent-go/internal/resources"
+	"github.com/nachoal/simple-agent-go/internal/runtimeprompt"
+	"github.com/nachoal/simple-agent-go/internal/selfknowledge"
 	"github.com/nachoal/simple-agent-go/internal/toolinit"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
@@ -41,6 +45,8 @@ var (
 	resumeSet    bool
 	customParser string
 	toolsFlag    string
+
+	customModelRegistry *models.Registry
 
 	// Root command
 	rootCmd = &cobra.Command{
@@ -147,6 +153,31 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create config manager: %w", err)
 	}
 
+	// Resolve working directory once; runtime resources are cwd-aware.
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	resourceLoader, err := resources.NewLoader(cwd, "")
+	if err != nil {
+		return fmt.Errorf("failed to initialize resource loader: %w", err)
+	}
+	selfInfo := selfknowledge.Discover(cwd)
+
+	modelsPath, err := models.DefaultModelsPath()
+	if err != nil {
+		return fmt.Errorf("failed to resolve models config path: %w", err)
+	}
+	customModelRegistry = models.NewRegistry(modelsPath)
+	if err := customModelRegistry.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
+	buildSystemPrompt := func() string {
+		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, selfInfo, resourceLoader.Snapshot())
+	}
+
 	// Get provider and model from config or flags
 	if provider == "" {
 		// First check config, then env, then default
@@ -163,7 +194,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Normalize provider name to lowercase for consistency
-	provider = strings.ToLower(provider)
+	provider = canonicalProvider(provider)
 
 	// Debug: Show loaded provider and model
 	if verbose {
@@ -181,30 +212,22 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 	defer llmClient.Close()
 
-	// Create all provider clients for model selection
+	// Create all provider clients for model selection.
 	providers := make(map[string]llm.Client)
-	providerNames := []string{"openai", "anthropic", "minmax", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
-
-	// Debug: count successful providers
+	providerNames := allProviderNames()
 	successCount := 0
-
 	for _, name := range providerNames {
-		// Skip if it's the same as our current client
-		if name == strings.ToLower(provider) {
-			providers[name] = llmClient
-			successCount++
-			continue
-		}
-
-		// Try to create client, skip if API key is missing
 		client, err := createLLMClient(name, getDefaultModel(name))
 		if err == nil {
 			providers[name] = client
 			successCount++
 		}
 	}
-
-	// If verbose, show how many providers were loaded
+	// Ensure currently selected provider is available in selector map.
+	if _, ok := providers[strings.ToLower(provider)]; !ok {
+		providers[strings.ToLower(provider)] = llmClient
+		successCount++
+	}
 	if verbose {
 		fmt.Printf("Loaded %d/%d providers for model selection\n", successCount, len(providerNames))
 	}
@@ -220,34 +243,38 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	effectiveToolsForHeader := agent.DefaultConfig().Tools
-	agentOpts := []agent.Option{
-		agent.WithMaxIterations(1000),
-		agent.WithMaxToolCalls(1000),
-		agent.WithTemperature(0.7),
-		agent.WithLMStudioParser(enableLMStudioParser),
+	buildAgentOptions := func(modelName string) []agent.Option {
+		opts := []agent.Option{
+			agent.WithModel(modelName),
+			agent.WithSystemPrompt(buildSystemPrompt()),
+			agent.WithMaxIterations(1000),
+			agent.WithMaxToolCalls(1000),
+			agent.WithTemperature(0.7),
+			agent.WithLMStudioParser(enableLMStudioParser),
+		}
+		if toolsRaw != "" {
+			if toolsAll {
+				opts = append(opts, agent.WithTools(nil)) // empty means "all tools"
+			} else {
+				opts = append(opts, agent.WithTools(toolsOverride))
+			}
+		}
+		return opts
 	}
 	if toolsRaw != "" {
 		if toolsAll {
-			agentOpts = append(agentOpts, agent.WithTools(nil)) // empty means "all tools"
 			effectiveToolsForHeader = nil
 		} else {
-			agentOpts = append(agentOpts, agent.WithTools(toolsOverride))
 			effectiveToolsForHeader = toolsOverride
 		}
 	}
 
-	agentInstance := agent.New(llmClient, agentOpts...)
+	agentInstance := agent.New(llmClient, buildAgentOptions(model)...)
 
 	// Initialize history manager
 	historyMgr, err := history.NewManager()
 	if err != nil {
 		return fmt.Errorf("failed to initialize history: %w", err)
-	}
-
-	// Get current working directory
-	cwd, err := os.Getwd()
-	if err != nil {
-		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
 	var session *history.Session
@@ -282,7 +309,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 					session.Model = model
 				}
 				agentInstance = agent.New(llmClient,
-					agentOpts...,
+					buildAgentOptions(model)...,
 				)
 			}
 		}
@@ -372,7 +399,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 				session.Model = model
 			}
 			agentInstance = agent.New(llmClient,
-				agentOpts...,
+				buildAgentOptions(model)...,
 			)
 		}
 	} else {
@@ -390,7 +417,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	if continueConv || resumeSet {
 		historyAgent.RestoreMemoryFromSession(session)
 		// Session history includes the original system prompt; ensure it's updated for this run's toolset.
-		historyAgent.SetSystemPrompt(agent.DefaultConfig().SystemPrompt)
+		historyAgent.SetSystemPrompt(buildSystemPrompt())
 		if verbose && session != nil {
 			fmt.Printf("Restored %d messages from session %s\n", len(session.Messages), session.ID)
 		}
@@ -427,9 +454,41 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	tui.PrintHeader(provider, model, effectiveToolsForHeader)
 
 	// Create and run TUI (bordered version with providers and history)
-	p := tea.NewProgram(
-		tui.NewBorderedTUIWithHistory(llmClient, historyAgent, provider, model, providers, configManager),
-	)
+	tuiModel := tui.NewBorderedTUIWithHistory(llmClient, historyAgent, provider, model, providers, configManager)
+	tuiModel.SetClientFactory(func(providerName, modelName string) (llm.Client, error) {
+		return createLLMClient(providerName, modelName)
+	})
+	tuiModel.SetSystemPromptBuilder(buildSystemPrompt)
+	tuiModel.SetStaticModelsLoader(func() map[string][]llm.Model {
+		if customModelRegistry == nil {
+			return map[string][]llm.Model{}
+		}
+		return customModelRegistry.StaticModels()
+	})
+	tuiModel.SetRuntimeReloader(func() error {
+		resourceLoader.Reload()
+		if customModelRegistry != nil {
+			if err := customModelRegistry.Reload(); err != nil {
+				return err
+			}
+		}
+		refreshed := make(map[string]llm.Client)
+		for _, name := range allProviderNames() {
+			client, err := createLLMClient(name, getDefaultModel(name))
+			if err == nil {
+				refreshed[name] = client
+			}
+		}
+		for name := range providers {
+			delete(providers, name)
+		}
+		for name, client := range refreshed {
+			providers[name] = client
+		}
+		return nil
+	})
+
+	p := tea.NewProgram(tuiModel)
 
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("error running TUI: %w", err)
@@ -446,10 +505,34 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	query := strings.Join(args, " ")
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	resourceLoader, err := resources.NewLoader(cwd, "")
+	if err != nil {
+		return fmt.Errorf("failed to initialize resource loader: %w", err)
+	}
+	selfInfo := selfknowledge.Discover(cwd)
+	buildSystemPrompt := func() string {
+		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, selfInfo, resourceLoader.Snapshot())
+	}
+
+	modelsPath, err := models.DefaultModelsPath()
+	if err != nil {
+		return fmt.Errorf("failed to resolve models config path: %w", err)
+	}
+	customModelRegistry = models.NewRegistry(modelsPath)
+	if err := customModelRegistry.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
 	// Get provider and model
 	if provider == "" {
 		provider = getEnvOrDefault("DEFAULT_PROVIDER", "openai")
 	}
+	provider = canonicalProvider(provider)
 	if model == "" {
 		model = getEnvOrDefault("DEFAULT_MODEL", getDefaultModel(provider))
 	}
@@ -476,6 +559,8 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 
 	agentOpts := []agent.Option{
+		agent.WithModel(model),
+		agent.WithSystemPrompt(buildSystemPrompt()),
 		agent.WithMaxIterations(1000),
 		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
@@ -622,17 +707,29 @@ func parseToolsOverride(raw string) ([]string, bool, error) {
 }
 
 func createLLMClient(provider, model string) (llm.Client, error) {
-	switch strings.ToLower(provider) {
+	normalizedProvider := canonicalProvider(provider)
+
+	if customModelRegistry != nil {
+		if cfg, ok := customModelRegistry.Provider(normalizedProvider); ok {
+			// If a custom provider is declared, or a built-in provider is overridden
+			// with a baseUrl, route requests through the custom configuration.
+			if cfg.BaseURL != "" || !models.IsBuiltInProvider(normalizedProvider) {
+				return createCustomConfiguredClient(cfg, model)
+			}
+		}
+	}
+
+	switch normalizedProvider {
 	case "openai":
 		return openai.NewClient(llm.WithModel(model))
 
-	case "anthropic", "claude":
+	case "anthropic":
 		return anthropic.NewClient(llm.WithModel(model))
 
-	case "minmax", "minimax":
+	case "minmax":
 		return minmax.NewClient(llm.WithModel(model))
 
-	case "moonshot", "kimi":
+	case "moonshot":
 		return moonshot.NewClient(llm.WithModel(model))
 
 	case "deepseek":
@@ -644,7 +741,7 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 	case "groq":
 		return groq.NewClient(llm.WithModel(model))
 
-	case "lmstudio", "lm-studio":
+	case "lmstudio":
 		return lmstudio.NewClient(llm.WithModel(model))
 
 	case "ollama":
@@ -656,7 +753,7 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 }
 
 func createLLMClientWithStartupFallback(provider, model string, allowFallback bool) (llm.Client, string, string, string, error) {
-	normalizedProvider := strings.ToLower(strings.TrimSpace(provider))
+	normalizedProvider := canonicalProvider(provider)
 	chosenModel := strings.TrimSpace(model)
 	if chosenModel == "" {
 		chosenModel = getDefaultModel(normalizedProvider)
@@ -694,15 +791,19 @@ func createLLMClientWithStartupFallback(provider, model string, allowFallback bo
 }
 
 func isLMStudioProvider(provider string) bool {
-	switch strings.ToLower(strings.TrimSpace(provider)) {
-	case "lmstudio", "lm-studio":
-		return true
-	default:
-		return false
-	}
+	return canonicalProvider(provider) == "lmstudio"
 }
 
 func getDefaultModel(provider string) string {
+	normalizedProvider := canonicalProvider(provider)
+
+	if customModelRegistry != nil {
+		if cfg, ok := customModelRegistry.Provider(normalizedProvider); ok && len(cfg.Models) > 0 {
+			// models.json list order defines preference.
+			return cfg.Models[0].ID
+		}
+	}
+
 	defaults := map[string]string{
 		"openai":     "gpt-4-turbo-preview",
 		"anthropic":  "claude-3-opus-20240229",
@@ -715,10 +816,98 @@ func getDefaultModel(provider string) string {
 		"ollama":     "llama2",
 	}
 
-	if model, ok := defaults[strings.ToLower(provider)]; ok {
+	if model, ok := defaults[normalizedProvider]; ok {
 		return model
 	}
 	return "default"
+}
+
+func canonicalProvider(provider string) string {
+	normalized := models.NormalizeProvider(provider)
+	switch normalized {
+	case "claude":
+		return "anthropic"
+	case "minimax":
+		return "minmax"
+	case "kimi":
+		return "moonshot"
+	default:
+		return normalized
+	}
+}
+
+func allProviderNames() []string {
+	base := []string{"openai", "anthropic", "minmax", "moonshot", "deepseek", "perplexity", "groq", "lmstudio", "ollama"}
+	seen := make(map[string]struct{}, len(base))
+	for _, name := range base {
+		seen[name] = struct{}{}
+	}
+
+	if customModelRegistry != nil {
+		for _, cfg := range customModelRegistry.Providers() {
+			name := canonicalProvider(cfg.Name)
+			if name == "" {
+				continue
+			}
+			if _, ok := seen[name]; ok {
+				continue
+			}
+			seen[name] = struct{}{}
+			base = append(base, name)
+		}
+	}
+
+	sort.Strings(base)
+	return base
+}
+
+func createCustomConfiguredClient(cfg models.ProviderConfig, model string) (llm.Client, error) {
+	if cfg.BaseURL == "" {
+		return nil, fmt.Errorf("provider %q requires baseUrl in models.json", cfg.Name)
+	}
+	if cfg.API != "" && !strings.EqualFold(cfg.API, "openai-completions") {
+		return nil, fmt.Errorf("provider %q api %q is unsupported (supported: openai-completions)", cfg.Name, cfg.API)
+	}
+
+	headers := make(map[string]string)
+	for k, v := range cfg.Headers {
+		resolved := models.ResolveConfigValue(v)
+		if resolved != "" {
+			headers[k] = resolved
+		}
+	}
+
+	apiKey := models.ResolveConfigValue(cfg.APIKey)
+	if cfg.AuthHeader {
+		if apiKey == "" {
+			return nil, fmt.Errorf("provider %q has authHeader=true but no apiKey value", cfg.Name)
+		}
+		if _, ok := headers["Authorization"]; !ok {
+			headers["Authorization"] = "Bearer " + apiKey
+		}
+	}
+
+	normalized := canonicalProvider(cfg.Name)
+	if normalized == "lmstudio" || apiKey == "" {
+		opts := []llm.ClientOption{
+			llm.WithBaseURL(cfg.BaseURL),
+			llm.WithModel(model),
+		}
+		if len(headers) > 0 {
+			opts = append(opts, llm.WithHeaders(headers))
+		}
+		return lmstudio.NewClient(opts...)
+	}
+
+	opts := []llm.ClientOption{
+		llm.WithBaseURL(cfg.BaseURL),
+		llm.WithModel(model),
+		llm.WithAPIKey(apiKey),
+	}
+	if len(headers) > 0 {
+		opts = append(opts, llm.WithHeaders(headers))
+	}
+	return openai.NewClient(opts...)
 }
 
 func getEnvOrDefault(key, defaultValue string) string {

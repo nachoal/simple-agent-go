@@ -27,12 +27,14 @@ func (i ModelItem) FilterValue() string { return i.DisplayName }
 type ModelSelector struct {
 	list      list.Model
 	providers map[string]llm.Client
-	selected  ModelItem
-	loading   bool
-	err       error
-	width     int
-	height    int
-	onSelect  func(provider, model string) tea.Cmd
+	// staticModels are optional models sourced from config (e.g., models.json).
+	staticModels map[string][]llm.Model
+	selected     ModelItem
+	loading      bool
+	err          error
+	width        int
+	height       int
+	onSelect     func(provider, model string) tea.Cmd
 }
 
 // Messages emitted by the model selector when used as an in-app modal
@@ -45,7 +47,7 @@ type (
 )
 
 // NewModelSelector creates a new model selector
-func NewModelSelector(providers map[string]llm.Client, onSelect func(provider, model string) tea.Cmd) *ModelSelector {
+func NewModelSelector(providers map[string]llm.Client, staticModels map[string][]llm.Model, onSelect func(provider, model string) tea.Cmd) *ModelSelector {
 	// Create list with custom styles
 	delegate := list.NewDefaultDelegate()
 	delegate.Styles.SelectedTitle = delegate.Styles.SelectedTitle.
@@ -68,12 +70,13 @@ func NewModelSelector(providers map[string]llm.Client, onSelect func(provider, m
 		Padding(0, 1)
 
 	return &ModelSelector{
-		list:      l,
-		providers: providers,
-		loading:   true,
-		onSelect:  onSelect,
-		width:     80, // Default width
-		height:    20, // Default height
+		list:         l,
+		providers:    providers,
+		staticModels: staticModels,
+		loading:      true,
+		onSelect:     onSelect,
+		width:        80, // Default width
+		height:       20, // Default height
 	}
 }
 
@@ -189,7 +192,7 @@ func (m *ModelSelector) View() string {
 func (m *ModelSelector) loadModels() tea.Cmd {
 	return func() tea.Msg {
 		// Check if we have any providers
-		if len(m.providers) == 0 {
+		if len(m.providers) == 0 && len(m.staticModels) == 0 {
 			return errMsg{err: fmt.Errorf("no providers available")}
 		}
 
@@ -221,6 +224,42 @@ func (m *ModelSelector) loadModels() tea.Cmd {
 			} else if len(res.models) > 0 {
 				results[res.provider] = res.models
 			}
+		}
+
+		// Merge static config models (e.g., models.json) with live-discovered models.
+		for provider, configured := range m.staticModels {
+			if len(configured) == 0 {
+				continue
+			}
+			existing := results[provider]
+			index := make(map[string]llm.Model, len(existing))
+			for _, model := range existing {
+				index[model.ID] = model
+			}
+			for _, model := range configured {
+				if current, ok := index[model.ID]; ok {
+					if model.Description != "" {
+						current.Description = model.Description
+					}
+					if model.MaxTokens > 0 {
+						current.MaxTokens = model.MaxTokens
+					}
+					if model.SupportsVision {
+						current.SupportsVision = true
+					}
+					index[model.ID] = current
+				} else {
+					index[model.ID] = model
+				}
+			}
+			merged := make([]llm.Model, 0, len(index))
+			for _, model := range index {
+				merged = append(merged, model)
+			}
+			sort.Slice(merged, func(i, j int) bool {
+				return merged[i].ID < merged[j].ID
+			})
+			results[provider] = merged
 		}
 
 		// If all providers failed, return error

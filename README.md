@@ -131,6 +131,8 @@ The TUI provides a delightful chat experience:
 - `/help` - Show available commands
 - `/tools` - List available tools with descriptions
 - `/model` - Interactively switch between models
+- `/reload` - Reload runtime context/resources/models
+- `/improve <goal>` - Run guarded self-improve cycle (requires `SIMPLE_AGENT_ENABLE_IMPROVE=1`)
 - `/system` - View the current system prompt
 - `/verbose` - Toggle debug mode
 - `/clear` - Clear conversation (Ctrl+L)

@@ -122,6 +122,7 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 
 		// Create chat request
 		request := &llm.ChatRequest{
+			Model:       a.config.Model,
 			Messages:    a.getMessages(),
 			Temperature: a.config.Temperature,
 			MaxTokens:   a.config.MaxTokens,
@@ -323,6 +324,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 
 			// Create chat request
 			request := &llm.ChatRequest{
+				Model:       a.config.Model,
 				Messages:    a.getMessages(),
 				Temperature: a.config.Temperature,
 				MaxTokens:   a.config.MaxTokens,
@@ -640,6 +642,13 @@ type Option func(*Config)
 func WithSystemPrompt(prompt string) Option {
 	return func(c *Config) {
 		c.SystemPrompt = prompt
+	}
+}
+
+// WithModel sets the model ID to send on each chat request.
+func WithModel(model string) Option {
+	return func(c *Config) {
+		c.Model = strings.TrimSpace(model)
 	}
 }
 

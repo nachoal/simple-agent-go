@@ -11,6 +11,7 @@ import (
 // Config contains agent configuration
 type Config struct {
 	SystemPrompt    string
+	Model           string
 	MaxIterations   int
 	MaxToolCalls    int
 	Temperature     float32
@@ -31,6 +32,7 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		SystemPrompt:         defaultSystemPrompt,
+		Model:                "",
 		MaxIterations:        1000,
 		MaxToolCalls:         1000,
 		Temperature:          0.7,

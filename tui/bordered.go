@@ -24,12 +24,18 @@ import (
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/history"
+	"github.com/nachoal/simple-agent-go/internal/improve"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools/registry"
 )
 
 const assistantMessageWrapWidth = 74
 const maxToolArgDisplayLen = 140
+
+type providerClientFactory func(provider, model string) (llm.Client, error)
+type systemPromptBuilder func() string
+type runtimeReloader func() error
+type staticModelsProvider func() map[string][]llm.Model
 
 // BorderedTUI is a minimal TUI that matches the Python bordered_interface.py
 type BorderedTUI struct {
@@ -51,6 +57,12 @@ type BorderedTUI struct {
 	// Providers for model selection
 	providers     map[string]llm.Client
 	configManager *config.Manager
+	clientFactory providerClientFactory
+
+	// Runtime resource/model refresh hooks.
+	systemPromptBuilder systemPromptBuilder
+	runtimeReloader     runtimeReloader
+	staticModelsLoader  staticModelsProvider
 
 	// Glamour renderer
 	renderer *glamour.TermRenderer
@@ -268,6 +280,8 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		{name: "/help", desc: "Show this help"},
 		{name: "/tools", desc: "List available tools"},
 		{name: "/model", desc: "Change model interactively"},
+		{name: "/reload", desc: "Reload context/resources/models"},
+		{name: "/improve", desc: "Run guarded self-improve cycle (opt-in)"},
 		{name: "/status", desc: "Show current model and provider"},
 		{name: "/system", desc: "Show system prompt"},
 		{name: "/thinking", desc: "Toggle model thinking (if supported)"},
@@ -343,6 +357,26 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 	}
 
 	return tui
+}
+
+// SetClientFactory sets the factory used for creating provider/model-specific clients.
+func (m *BorderedTUI) SetClientFactory(factory func(provider, model string) (llm.Client, error)) {
+	m.clientFactory = factory
+}
+
+// SetSystemPromptBuilder sets the callback used to rebuild runtime system prompts.
+func (m *BorderedTUI) SetSystemPromptBuilder(builder func() string) {
+	m.systemPromptBuilder = builder
+}
+
+// SetRuntimeReloader sets the callback used by /reload.
+func (m *BorderedTUI) SetRuntimeReloader(reloader func() error) {
+	m.runtimeReloader = reloader
+}
+
+// SetStaticModelsLoader sets the callback used to fetch configured static models.
+func (m *BorderedTUI) SetStaticModelsLoader(loader func() map[string][]llm.Model) {
+	m.staticModelsLoader = loader
 }
 
 // Attachment represents a user-attached image reference
@@ -1196,7 +1230,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		if msg.isModelSelect {
 			// Show in-app model selector modal
-			m.selector = NewModelSelector(m.providers, nil)
+			configuredModels := map[string][]llm.Model{}
+			if m.staticModelsLoader != nil {
+				configuredModels = m.staticModelsLoader()
+			}
+			m.selector = NewModelSelector(m.providers, configuredModels, nil)
 			// Initialize selector size to match current TUI
 			if m.selector != nil {
 				m.selector.width = m.width
@@ -1256,10 +1294,33 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.err = fmt.Errorf("failed to save config: %w", err)
 			}
 		}
-		// Update agent client if available
-		if newClient, ok := m.providers[msg.provider]; ok {
+		// Update agent client with selected provider/model.
+		var newClient llm.Client
+		if m.clientFactory != nil {
+			client, err := m.clientFactory(msg.provider, msg.model)
+			if err != nil {
+				m.showModelSelector = false
+				m.selector = nil
+				m.textarea.Focus()
+				return m, tea.Batch(
+					tea.ExitAltScreen,
+					printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err))),
+				)
+			}
+			newClient = client
+		} else if existing, ok := m.providers[msg.provider]; ok {
+			newClient = existing
+		}
+
+		if newClient != nil {
 			m.llmClient = newClient
+			systemPrompt := agent.DefaultConfig().SystemPrompt
+			if m.systemPromptBuilder != nil {
+				systemPrompt = m.systemPromptBuilder()
+			}
 			m.agent = agent.New(newClient,
+				agent.WithModel(msg.model),
+				agent.WithSystemPrompt(systemPrompt),
 				agent.WithMaxIterations(1000),
 				agent.WithMaxToolCalls(1000),
 				agent.WithTemperature(0.7),
@@ -1533,6 +1594,9 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
 	if strings.HasPrefix(lower, "/thinking") {
 		return m.handleThinkingCommand(lower)
 	}
+	if strings.HasPrefix(lower, "/improve") {
+		return m.handleImproveCommand(trimmed)
+	}
 	switch lower {
 	case "/exit", "/quit":
 		// Return a special message type that will trigger quit
@@ -1545,6 +1609,8 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
   /help    - Show this help
   /tools   - List available tools
   /model   - Change model interactively
+  /reload  - Reload context/resources/models
+  /improve <goal> - Run guarded self-improve cycle (requires SIMPLE_AGENT_ENABLE_IMPROVE=1)
   /status  - Show current model and provider
   /system  - Show system prompt
   /thinking [on|off] - Toggle model thinking (if supported)
@@ -1603,6 +1669,8 @@ Keyboard shortcuts:
 			statusMsg = fmt.Sprintf("%s\n  Thinking: %s", statusMsg, thinkingState)
 		}
 		return borderedResponseMsg{content: statusMsg, isCommand: true}
+	case "/reload":
+		return m.handleReloadCommand()
 	case "/system":
 		// Show the current system prompt with tools
 		messages := m.agent.GetMemory()
@@ -1732,6 +1800,95 @@ func (m *BorderedTUI) handleThinkingCommand(cmd string) borderedResponseMsg {
 		return borderedResponseMsg{content: "Thinking: ON", isCommand: true}
 	}
 	return borderedResponseMsg{content: "Thinking: OFF", isCommand: true}
+}
+
+func (m *BorderedTUI) handleReloadCommand() borderedResponseMsg {
+	if m.runtimeReloader != nil {
+		if err := m.runtimeReloader(); err != nil {
+			return borderedResponseMsg{content: fmt.Sprintf("Reload failed: %v", err), isCommand: true}
+		}
+	}
+
+	if m.systemPromptBuilder != nil {
+		m.agent.SetSystemPrompt(m.systemPromptBuilder())
+	}
+
+	return borderedResponseMsg{
+		content:   "Reloaded context/resources/models and refreshed system prompt.",
+		isCommand: true,
+	}
+}
+
+func (m *BorderedTUI) handleImproveCommand(cmd string) borderedResponseMsg {
+	goal := strings.TrimSpace(strings.TrimPrefix(cmd, "/improve"))
+	if goal == "" {
+		return borderedResponseMsg{content: "Usage: /improve <goal>", isCommand: true}
+	}
+	if !improve.Enabled() {
+		return borderedResponseMsg{
+			content:   "Auto-improve is disabled. Set SIMPLE_AGENT_ENABLE_IMPROVE=1 to enable /improve.",
+			isCommand: true,
+		}
+	}
+
+	systemPrompt := agent.DefaultConfig().SystemPrompt
+	if m.systemPromptBuilder != nil {
+		systemPrompt = m.systemPromptBuilder()
+	}
+
+	improveAgent := agent.New(
+		m.llmClient,
+		agent.WithModel(m.model),
+		agent.WithSystemPrompt(systemPrompt),
+		agent.WithTools([]string{"directory_list", "read", "edit", "write"}),
+		agent.WithMaxIterations(80),
+		agent.WithMaxToolCalls(160),
+		agent.WithTemperature(0.2),
+	)
+
+	cwd, _ := os.Getwd()
+	runner := improve.NewRunner(cwd)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Minute)
+	defer cancel()
+
+	result, err := runner.Run(ctx, improveAgent, goal)
+	if err != nil {
+		return borderedResponseMsg{
+			content:   fmt.Sprintf("Improve failed: %v", err),
+			isCommand: true,
+		}
+	}
+
+	var b strings.Builder
+	b.WriteString("Improve completed.\n")
+	if result.AgentSummary != "" {
+		b.WriteString("\nAgent summary:\n")
+		b.WriteString(result.AgentSummary)
+		b.WriteString("\n")
+	}
+	if len(result.ChangedFiles) > 0 {
+		b.WriteString("\nChanged files:\n")
+		for _, file := range result.ChangedFiles {
+			b.WriteString("- ")
+			b.WriteString(file)
+			b.WriteString("\n")
+		}
+	}
+	if len(result.Verification) > 0 {
+		b.WriteString("\nVerification:\n")
+		for _, step := range result.Verification {
+			status := "ok"
+			if step.Err != nil {
+				status = step.Err.Error()
+			}
+			b.WriteString(fmt.Sprintf("- %s -> %s\n", step.Command, status))
+		}
+	}
+
+	return borderedResponseMsg{
+		content:   strings.TrimSpace(b.String()),
+		isCommand: true,
+	}
 }
 
 type borderedResponseMsg struct {
