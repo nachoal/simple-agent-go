@@ -929,8 +929,10 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				value := m.textarea.Value()
 				trimmed := strings.TrimSpace(value)
 				if trimmed != "" {
-					// If suggestions are visible for a slash command, Enter executes the selected command
-					if m.suggestVisible && len(m.suggestItems) > 0 && strings.HasPrefix(trimmed, "/") {
+					// If suggestions are visible for a slash command, Enter executes the selected
+					// command only when the input is just a single token (no arguments yet).
+					if m.suggestVisible && len(m.suggestItems) > 0 && strings.HasPrefix(trimmed, "/") &&
+						!strings.ContainsAny(trimmed, " \t\n") {
 						selected := m.suggestItems[m.suggestIndex].name
 						// Clear input and reset height
 						m.textarea.Reset()
