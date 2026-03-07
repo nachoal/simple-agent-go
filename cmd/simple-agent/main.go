@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/joho/godotenv"
@@ -45,6 +46,8 @@ var (
 	resumeSet    bool
 	customParser string
 	toolsFlag    string
+	maxTokens    int
+	timeoutMins  int
 
 	customModelRegistry *models.Registry
 
@@ -112,6 +115,8 @@ func init() {
 	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
 	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session ID or show picker if no ID provided")
 	rootCmd.PersistentFlags().StringVar(&customParser, "custom-parser", "", "Enable custom parsing for provider output (e.g., 'lmstudio')")
+	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 0, "Max tokens per completion (0 = use default: 8192)")
+	rootCmd.PersistentFlags().IntVar(&timeoutMins, "timeout", 0, "Per-request timeout in minutes (0 = use default: 10)")
 
 	// Set NoOptDefVal for resume flag - this value is used when -r is provided without an argument
 	rootCmd.Flags().Lookup("resume").NoOptDefVal = "picker"
@@ -251,6 +256,12 @@ func runTUI(cmd *cobra.Command, args []string) error {
 			agent.WithMaxToolCalls(1000),
 			agent.WithTemperature(0.7),
 			agent.WithLMStudioParser(enableLMStudioParser),
+		}
+		if maxTokens > 0 {
+			opts = append(opts, agent.WithMaxTokens(maxTokens))
+		}
+		if timeoutMins > 0 {
+			opts = append(opts, agent.WithTimeout(time.Duration(timeoutMins)*time.Minute))
 		}
 		if toolsRaw != "" {
 			if toolsAll {
@@ -565,6 +576,12 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		agent.WithMaxToolCalls(1000),
 		agent.WithTemperature(0.7),
 		agent.WithLMStudioParser(enableLMStudioParser),
+	}
+	if maxTokens > 0 {
+		agentOpts = append(agentOpts, agent.WithMaxTokens(maxTokens))
+	}
+	if timeoutMins > 0 {
+		agentOpts = append(agentOpts, agent.WithTimeout(time.Duration(timeoutMins)*time.Minute))
 	}
 	if toolsRaw != "" {
 		if toolsAll {

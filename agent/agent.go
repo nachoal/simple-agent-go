@@ -694,6 +694,13 @@ func WithMaxTokens(max int) Option {
 	}
 }
 
+// WithTimeout sets the per-request HTTP timeout
+func WithTimeout(d time.Duration) Option {
+	return func(c *Config) {
+		c.Timeout = d
+	}
+}
+
 // WithTools sets the allowed tools
 func WithTools(tools []string) Option {
 	return func(c *Config) {
