@@ -33,6 +33,7 @@ Use this when iterating locally and only a subset of Go packages changed.
 - `go run ./scripts/run_harness --mode public`
 
 Use this to mirror the public CI surface without private transcript analysis.
+When a check fails, the harness prints the failing command and captured output to stderr so CI logs retain the root cause.
 
 ## Full Private Path
 

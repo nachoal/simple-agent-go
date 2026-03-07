@@ -24,6 +24,8 @@ After any behavior-changing edit:
 4. If the change touches harness, verification, or maintainer workflow code, run the relevant harness entrypoint too.
 5. Report the exact artifact path and modification time in the final update.
 
+Harness failures must also print the captured failing command output so CI logs are actionable without opening local harness artifacts.
+
 Example public verification:
 
 ```bash

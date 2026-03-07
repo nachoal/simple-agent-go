@@ -86,6 +86,7 @@ func main() {
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
 			_ = writeHarnessResult(result)
+			reportFailedCheck(res)
 			fail(fmt.Errorf("%s failed", check.name))
 		}
 	}
@@ -101,6 +102,7 @@ func main() {
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
 			_ = writeHarnessResult(result)
+			reportFailedCheck(res)
 			fail(fmt.Errorf("private codex analysis failed"))
 		}
 	}
@@ -117,6 +119,7 @@ func main() {
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
 			_ = writeHarnessResult(result)
+			reportFailedCheck(res)
 			fail(fmt.Errorf("live lmstudio canary failed"))
 		}
 	}
@@ -325,6 +328,19 @@ func truncateOutput(output string) string {
 		return output
 	}
 	return output[:maxCapturedOutput] + "\n[output truncated]"
+}
+
+func reportFailedCheck(res CheckResult) {
+	fmt.Fprintf(os.Stderr, "Check %s failed\n", res.Name)
+	if strings.TrimSpace(res.Command) != "" {
+		fmt.Fprintf(os.Stderr, "Command: %s\n", res.Command)
+	}
+	if strings.TrimSpace(res.Error) != "" {
+		fmt.Fprintf(os.Stderr, "Error: %s\n", res.Error)
+	}
+	if strings.TrimSpace(res.Output) != "" {
+		fmt.Fprintf(os.Stderr, "Captured output:\n%s\n", res.Output)
+	}
 }
 
 func fail(err error) {

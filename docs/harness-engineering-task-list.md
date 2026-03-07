@@ -9,6 +9,7 @@ This repo now follows a harness-oriented split: public OSS code and CI stay in t
 - [x] Add a reusable Codex analysis package for local retrospectives and failure taxonomy extraction.
 - [x] Add a local harness runner that executes build, tests, smoke checks, and private Codex analysis.
 - [x] Add public-safe CI for build, test, and smoke verification.
+- [x] Make harness failures print captured command output directly in CI logs.
 - [x] Add public documentation that distinguishes OSS-safe artifacts from private local-only artifacts.
 - [x] Add structured JSONL run logs for autonomous verification.
 - [x] Add machine-readable CLI surfaces for tools, models, and runtime diagnostics.

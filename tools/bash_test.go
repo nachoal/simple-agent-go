@@ -3,11 +3,37 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
 	"github.com/nachoal/simple-agent-go/tools/base"
 )
+
+func installStubCommand(t *testing.T, name string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	pathEnv := dir + string(os.PathListSeparator) + os.Getenv("PATH")
+	t.Setenv("PATH", pathEnv)
+
+	if runtime.GOOS == "windows" {
+		path := filepath.Join(dir, name+".cmd")
+		content := []byte("@echo off\r\necho stub instaloader\r\n")
+		if err := os.WriteFile(path, content, 0644); err != nil {
+			t.Fatalf("write stub command: %v", err)
+		}
+		return
+	}
+
+	path := filepath.Join(dir, name)
+	content := []byte("#!/bin/sh\nprintf 'stub instaloader\\n'\n")
+	if err := os.WriteFile(path, content, 0755); err != nil {
+		t.Fatalf("write stub command: %v", err)
+	}
+}
 
 func TestShellTool_AllowlistRejectsDisallowedCommand(t *testing.T) {
 	tool := &BashTool{
@@ -83,6 +109,8 @@ func TestBashTool_BlocksRiskyInstaloaderWithoutFailFastFlags(t *testing.T) {
 }
 
 func TestBashTool_AllowsInstaloaderWithFailFastFlags(t *testing.T) {
+	installStubCommand(t, "instaloader")
+
 	tool := &BashTool{
 		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
 		allowedCommands: nil,
@@ -95,6 +123,9 @@ func TestBashTool_AllowsInstaloaderWithFailFastFlags(t *testing.T) {
 	}
 	if !strings.Contains(out, "Exit Code: 0") {
 		t.Fatalf("expected successful exit code in output, got:\n%s", out)
+	}
+	if !strings.Contains(out, "stub instaloader") {
+		t.Fatalf("expected stub command output, got:\n%s", out)
 	}
 }
 

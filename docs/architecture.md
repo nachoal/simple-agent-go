@@ -30,6 +30,8 @@ Operational notes:
 
 This surface is safe to run in CI and safe to document publicly.
 
+Public harness runs should emit the captured output of any failing check directly to stderr so CI failures are diagnosable from the Actions log.
+
 ## 3. Private Local Harness
 
 - `scripts/analyze_codex_sessions`
