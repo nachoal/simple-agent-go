@@ -18,7 +18,7 @@ import (
 
 const (
 	defaultBaseURL = "http://localhost:1234/v1"
-	defaultTimeout = 120 * time.Second // Longer timeout for local models
+	defaultTimeout = 10 * time.Minute // Local coding models often need multi-minute requests
 	defaultModel   = "local-model"
 )
 

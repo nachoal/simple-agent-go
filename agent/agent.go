@@ -76,6 +76,13 @@ func New(client llm.Client, opts ...Option) Agent {
 	return a
 }
 
+func (a *agent) withRequestTimeout(ctx context.Context) (context.Context, context.CancelFunc) {
+	if a.config.Timeout <= 0 {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(ctx, a.config.Timeout)
+}
+
 // Query sends a query and returns the response
 func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	// Add user message to memory
@@ -149,7 +156,9 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 		}
 
 		// Send request to LLM
-		response, err := a.client.Chat(ctx, request)
+		requestCtx, cancel := a.withRequestTimeout(ctx)
+		response, err := a.client.Chat(requestCtx, request)
+		cancel()
 		if err != nil {
 			logAgentEvent(ctx, "llm_error", map[string]interface{}{
 				"mode":      "query",
@@ -385,8 +394,10 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			})
 
 			// Send streaming request to LLM
-			streamEvents, err := a.client.ChatStream(ctx, request)
+			requestCtx, cancel := a.withRequestTimeout(ctx)
+			streamEvents, err := a.client.ChatStream(requestCtx, request)
 			if err != nil {
+				cancel()
 				logAgentEvent(ctx, "llm_error", map[string]interface{}{
 					"mode":      "stream",
 					"iteration": iteration + 1,
@@ -412,6 +423,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			for {
 				select {
 				case <-ctx.Done():
+					cancel()
 					return
 				case event, ok := <-streamEvents:
 					if !ok {
@@ -459,6 +471,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 					}
 				}
 			}
+			cancel()
 
 			if ctx.Err() != nil {
 				return
@@ -1143,6 +1156,15 @@ func extractRecoveredToolCallJSON(content string) (string, bool) {
 			continue
 		}
 
+		if ch == '<' && inString {
+			candidate := strings.TrimSpace(strings.TrimSuffix(b.String(), "<"))
+			if candidate == "" || !strings.Contains(candidate, `"name"`) || !strings.Contains(candidate, `"arguments"`) {
+				return "", false
+			}
+			candidate = closeRecoveredToolCallJSON(candidate, depth, true)
+			return candidate, true
+		}
+
 		if inString {
 			continue
 		}
@@ -1166,9 +1188,7 @@ func extractRecoveredToolCallJSON(content string) (string, bool) {
 			if candidate == "" || !strings.Contains(candidate, `"name"`) || !strings.Contains(candidate, `"arguments"`) {
 				return "", false
 			}
-			if depth > 0 {
-				candidate += strings.Repeat("}", depth)
-			}
+			candidate = closeRecoveredToolCallJSON(candidate, depth, inString)
 			return candidate, true
 		}
 	}
@@ -1181,10 +1201,18 @@ func extractRecoveredToolCallJSON(content string) (string, bool) {
 	if candidate == "" || !strings.Contains(candidate, `"name"`) || !strings.Contains(candidate, `"arguments"`) {
 		return "", false
 	}
+	candidate = closeRecoveredToolCallJSON(candidate, depth, inString)
+	return candidate, true
+}
+
+func closeRecoveredToolCallJSON(candidate string, depth int, inString bool) string {
+	if inString {
+		candidate += `"`
+	}
 	if depth > 0 {
 		candidate += strings.Repeat("}", depth)
 	}
-	return candidate, true
+	return candidate
 }
 
 func sanitizeLLMToolCalls(toolCalls []llm.ToolCall) []llm.ToolCall {

@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"unicode/utf8"
 
@@ -77,30 +76,35 @@ func (t *ReadTool) Execute(ctx context.Context, params json.RawMessage) (string,
 		return "", NewToolError("VALIDATION_FAILED", "Path cannot be empty")
 	}
 
-	// Clean and validate the path
-	cleanPath := filepath.Clean(args.Path)
+	resolvedPath, workspace, err := resolveWorkspacePath(args.Path)
+	if err != nil {
+		return "", err
+	}
+	displayPath := displayPathForWorkspace(resolvedPath, workspace)
 
 	// Check if file exists
-	info, err := os.Stat(cleanPath)
+	info, err := os.Stat(resolvedPath)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", NewToolError("FILE_NOT_FOUND", "File does not exist").
-				WithDetail("path", cleanPath)
+				WithDetail("path", displayPath)
 		}
 		return "", NewToolError("ACCESS_ERROR", "Cannot access file").
+			WithDetail("path", displayPath).
 			WithDetail("error", err.Error())
 	}
 
 	// Check if it's a directory
 	if info.IsDir() {
 		return "", NewToolError("IS_DIRECTORY", "Path points to a directory, not a file").
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
 	// Read file
-	content, err := os.ReadFile(cleanPath)
+	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return "", NewToolError("READ_ERROR", "Error reading file").
+			WithDetail("path", displayPath).
 			WithDetail("error", err.Error())
 	}
 

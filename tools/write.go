@@ -39,23 +39,26 @@ func (t *WriteTool) Execute(ctx context.Context, params json.RawMessage) (string
 		return "", NewToolError("VALIDATION_FAILED", "Path cannot be empty")
 	}
 
-	// Clean the path
-	cleanPath := filepath.Clean(args.Path)
+	resolvedPath, workspace, err := resolveWorkspacePath(args.Path)
+	if err != nil {
+		return "", err
+	}
+	displayPath := displayPathForWorkspace(resolvedPath, workspace)
 
 	// Always create parent directories.
-	dir := filepath.Dir(cleanPath)
+	dir := filepath.Dir(resolvedPath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return "", NewToolError("MKDIR_ERROR", "Failed to create parent directories").
 			WithDetail("error", err.Error()).
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
 	// Always overwrite.
-	if err := os.WriteFile(cleanPath, []byte(args.Content), 0644); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(args.Content), 0644); err != nil {
 		return "", NewToolError("WRITE_ERROR", "Failed to write file").
 			WithDetail("error", err.Error()).
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
-	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(args.Content), cleanPath), nil
+	return fmt.Sprintf("Successfully wrote %d bytes to %s", len(args.Content), displayPath), nil
 }

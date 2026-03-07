@@ -210,7 +210,7 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	buildSystemPrompt := func() string {
-		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, selfInfo, resourceLoader.Snapshot())
+		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, cwd, selfInfo, resourceLoader.Snapshot())
 	}
 
 	// Get provider and model from config or flags
@@ -562,7 +562,7 @@ func runQuery(cmd *cobra.Command, args []string) error {
 	}
 	selfInfo := selfknowledge.Discover(cwd)
 	buildSystemPrompt := func() string {
-		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, selfInfo, resourceLoader.Snapshot())
+		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, cwd, selfInfo, resourceLoader.Snapshot())
 	}
 
 	modelsPath, err := models.DefaultModelsPath()
@@ -970,8 +970,10 @@ func parseToolsOverride(raw string) ([]string, bool, error) {
 }
 
 func createLLMClient(provider, model string) (llm.Client, error) {
+	clientOpts := clientOptionsForModel(model)
+
 	if harnessllm.Enabled() {
-		return harnessllm.New(llm.WithModel(model))
+		return harnessllm.New(clientOpts...)
 	}
 
 	normalizedProvider := canonicalProvider(provider)
@@ -988,31 +990,31 @@ func createLLMClient(provider, model string) (llm.Client, error) {
 
 	switch normalizedProvider {
 	case "openai":
-		return openai.NewClient(llm.WithModel(model))
+		return openai.NewClient(clientOpts...)
 
 	case "anthropic":
-		return anthropic.NewClient(llm.WithModel(model))
+		return anthropic.NewClient(clientOpts...)
 
 	case "minmax":
-		return minmax.NewClient(llm.WithModel(model))
+		return minmax.NewClient(clientOpts...)
 
 	case "moonshot":
-		return moonshot.NewClient(llm.WithModel(model))
+		return moonshot.NewClient(clientOpts...)
 
 	case "deepseek":
-		return deepseek.NewClient(llm.WithModel(model))
+		return deepseek.NewClient(clientOpts...)
 
 	case "perplexity":
-		return perplexity.NewClient(llm.WithModel(model))
+		return perplexity.NewClient(clientOpts...)
 
 	case "groq":
-		return groq.NewClient(llm.WithModel(model))
+		return groq.NewClient(clientOpts...)
 
 	case "lmstudio":
-		return lmstudio.NewClient(llm.WithModel(model))
+		return lmstudio.NewClient(clientOpts...)
 
 	case "ollama":
-		return ollama.NewClient(llm.WithModel(model))
+		return ollama.NewClient(clientOpts...)
 
 	default:
 		return nil, fmt.Errorf("unknown provider: %s", provider)
@@ -1128,6 +1130,18 @@ func allProviderNames() []string {
 	return base
 }
 
+func clientOptionsForModel(model string) []llm.ClientOption {
+	opts := []llm.ClientOption{llm.WithModel(model)}
+	timeout := time.Duration(timeoutMins) * time.Minute
+	if timeout <= 0 {
+		timeout = agent.DefaultConfig().Timeout
+	}
+	if timeout > 0 {
+		opts = append(opts, llm.WithTimeout(timeout))
+	}
+	return opts
+}
+
 func createCustomConfiguredClient(cfg models.ProviderConfig, model string) (llm.Client, error) {
 	if cfg.BaseURL == "" {
 		return nil, fmt.Errorf("provider %q requires baseUrl in models.json", cfg.Name)
@@ -1156,21 +1170,17 @@ func createCustomConfiguredClient(cfg models.ProviderConfig, model string) (llm.
 
 	normalized := canonicalProvider(cfg.Name)
 	if normalized == "lmstudio" || apiKey == "" {
-		opts := []llm.ClientOption{
-			llm.WithBaseURL(cfg.BaseURL),
-			llm.WithModel(model),
-		}
+		opts := append(clientOptionsForModel(model), llm.WithBaseURL(cfg.BaseURL))
 		if len(headers) > 0 {
 			opts = append(opts, llm.WithHeaders(headers))
 		}
 		return lmstudio.NewClient(opts...)
 	}
 
-	opts := []llm.ClientOption{
+	opts := append(clientOptionsForModel(model),
 		llm.WithBaseURL(cfg.BaseURL),
-		llm.WithModel(model),
 		llm.WithAPIKey(apiKey),
-	}
+	)
 	if len(headers) > 0 {
 		opts = append(opts, llm.WithHeaders(headers))
 	}

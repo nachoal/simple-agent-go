@@ -14,6 +14,11 @@ This repository is split into four surfaces:
 
 This is the shipped OSS product surface.
 
+Operational notes:
+
+- The agent applies a per-request LLM timeout from runtime config/CLI (`--timeout`) instead of relying on provider defaults.
+- File mutation/read tools are workspace-scoped to the current working directory so repo-local runs do not escape into unrelated paths.
+
 ## 2. Public OSS Harness
 
 - `go test ./...`

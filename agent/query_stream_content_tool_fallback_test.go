@@ -102,6 +102,65 @@ func (c *contentFallbackStreamClient) Close() error {
 	return nil
 }
 
+type contentFallbackQueryClient struct {
+	mu      sync.Mutex
+	calls   int
+	payload string
+}
+
+func (c *contentFallbackQueryClient) Chat(_ context.Context, _ *llm.ChatRequest) (*llm.ChatResponse, error) {
+	c.mu.Lock()
+	c.calls++
+	call := c.calls
+	c.mu.Unlock()
+
+	switch call {
+	case 1:
+		payload := c.payload
+		if payload == "" {
+			payload = `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping"}}`
+		}
+		return &llm.ChatResponse{
+			Choices: []llm.Choice{
+				{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: llm.StringPtr(payload),
+					},
+				},
+			},
+		}, nil
+	default:
+		final := "done"
+		return &llm.ChatResponse{
+			Choices: []llm.Choice{
+				{
+					Message: llm.Message{
+						Role:    llm.RoleAssistant,
+						Content: &final,
+					},
+				},
+			},
+		}, nil
+	}
+}
+
+func (c *contentFallbackQueryClient) ChatStream(context.Context, *llm.ChatRequest) (<-chan llm.StreamEvent, error) {
+	return nil, nil
+}
+
+func (c *contentFallbackQueryClient) ListModels(context.Context) ([]llm.Model, error) {
+	return nil, nil
+}
+
+func (c *contentFallbackQueryClient) GetModel(context.Context, string) (*llm.Model, error) {
+	return nil, nil
+}
+
+func (c *contentFallbackQueryClient) Close() error {
+	return nil
+}
+
 func TestQueryStream_ParsesToolCallFromContentWhenStreaming(t *testing.T) {
 	if err := registry.Register(streamContentFallbackToolName, func() tools.Tool {
 		return streamContentFallbackTool{}
@@ -211,5 +270,67 @@ func TestQueryStream_RecoversMalformedToolCallFromContentWhenStreaming(t *testin
 	defer client.mu.Unlock()
 	if client.calls < 2 {
 		t.Fatalf("expected at least 2 stream calls (tool call + final response), got %d", client.calls)
+	}
+}
+
+func TestQuery_RecoversMalformedToolCallFromContent(t *testing.T) {
+	if err := registry.Register(streamContentFallbackToolName, func() tools.Tool {
+		return streamContentFallbackTool{}
+	}); err != nil && !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("failed to register test tool: %v", err)
+	}
+
+	client := &contentFallbackQueryClient{
+		payload: `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping"}</arg_value></tool_call>`,
+	}
+	a := New(client,
+		WithTools([]string{streamContentFallbackToolName}),
+		WithMaxIterations(4),
+		WithMaxToolCalls(4),
+	)
+
+	resp, err := a.Query(context.Background(), "use the tool")
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("expected final response %q, got %q", "done", resp.Content)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Result != "handled:ping" {
+		t.Fatalf("expected tool execution result handled:ping, got %#v", resp.ToolCalls)
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.calls < 2 {
+		t.Fatalf("expected at least 2 chat calls (tool call + final response), got %d", client.calls)
+	}
+}
+
+func TestQuery_RecoversMalformedToolCallWithUnclosedStringFromContent(t *testing.T) {
+	if err := registry.Register(streamContentFallbackToolName, func() tools.Tool {
+		return streamContentFallbackTool{}
+	}); err != nil && !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("failed to register test tool: %v", err)
+	}
+
+	client := &contentFallbackQueryClient{
+		payload: `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping</arg_value></tool_call>`,
+	}
+	a := New(client,
+		WithTools([]string{streamContentFallbackToolName}),
+		WithMaxIterations(4),
+		WithMaxToolCalls(4),
+	)
+
+	resp, err := a.Query(context.Background(), "use the tool")
+	if err != nil {
+		t.Fatalf("Query returned error: %v", err)
+	}
+	if resp.Content != "done" {
+		t.Fatalf("expected final response %q, got %q", "done", resp.Content)
+	}
+	if len(resp.ToolCalls) != 1 || resp.ToolCalls[0].Result != "handled:ping" {
+		t.Fatalf("expected tool execution result handled:ping, got %#v", resp.ToolCalls)
 	}
 }

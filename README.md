@@ -109,6 +109,9 @@ simple-agent --tools all
 # Use a specific model
 simple-agent --provider anthropic --model claude-3-opus-20240229
 
+# Allow slower local-model requests up to 15 minutes each
+simple-agent --provider lmstudio --model qwen3.5-27b --timeout 15
+
 # Quick one-shot query
 simple-agent query "What files are in the current directory?"
 
@@ -144,9 +147,9 @@ The TUI provides a delightful chat experience:
 |------|-------------|-------------|
 | 🧮 **calculate** | Evaluate math expressions | "What's 2^10 + sqrt(144)?" |
 | 📄 **read** | Read any file | "Show me the contents of main.go" |
-| 💾 **write** | Create/overwrite files | "Create a Python hello world script" |
-| ✏️ **edit** | Modify existing files | "Add error handling to that function" |
-| 📁 **directory_list** | Browse directories | "What's in the src folder?" |
+| 💾 **write** | Create/overwrite files in the current working directory | "Create a Python hello world script" |
+| ✏️ **edit** | Modify existing files in the current working directory | "Add error handling to that function" |
+| 📁 **directory_list** | Browse directories in the current working directory | "What's in the src folder?" |
 | 🖥️ **bash** | Run commands (restricted allowlist by default; use `--yolo` to allow any command) | "Show git status" |
 | 📚 **wikipedia** | Search Wikipedia | "Tell me about quantum computing" |
 | 🔍 **google_search** | Web search (requires API) | "Find the latest Go releases" |
@@ -164,6 +167,11 @@ The TUI provides a delightful chat experience:
 | **Groq** | Fast inference | llama-3-70b, mixtral-8x7b |
 | **Perplexity** | Web-aware chat | llama-3.1-sonar-huge-128k-online |
 | **Local** | Privacy-focused | Any Ollama/LM Studio model |
+
+Notes:
+
+- `--timeout` applies to each LLM request, including local-model providers such as LM Studio and custom OpenAI-compatible endpoints.
+- File tools (`read`, `write`, `edit`, `directory_list`) are confined to the process working directory. Start `simple-agent` from the repo or sandbox you want it to modify.
 
 ## 🔧 Adding Custom Tools
 

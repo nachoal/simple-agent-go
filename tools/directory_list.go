@@ -54,18 +54,20 @@ func (t *DirectoryListTool) Execute(ctx context.Context, params json.RawMessage)
 		path = "."
 	}
 
-	// Clean the path
-	cleanPath := filepath.Clean(path)
+	resolvedPath, workspace, err := resolveWorkspacePath(path)
+	if err != nil {
+		return "", err
+	}
 
 	// Ruby behavior: use glob to get all files recursively
-	pattern := filepath.Join(cleanPath, "**", "*")
+	pattern := filepath.Join(resolvedPath, "**", "*")
 	matches, err := filepath.Glob(pattern)
 	if err != nil {
 		return "Error listing directory: " + err.Error(), nil
 	}
 
 	// Also include files in the base directory
-	basePattern := filepath.Join(cleanPath, "*")
+	basePattern := filepath.Join(resolvedPath, "*")
 	baseMatches, err := filepath.Glob(basePattern)
 	if err != nil {
 		return "Error listing directory: " + err.Error(), nil
@@ -89,11 +91,12 @@ func (t *DirectoryListTool) Execute(ctx context.Context, params json.RawMessage)
 		}
 
 		// Check if it's a directory and add trailing slash
+		display := displayPathForWorkspace(match, workspace)
 		info, err := os.Stat(match)
 		if err == nil && info.IsDir() {
-			entries = append(entries, match+"/")
+			entries = append(entries, display+"/")
 		} else {
-			entries = append(entries, match)
+			entries = append(entries, display)
 		}
 	}
 

@@ -11,10 +11,15 @@ import (
 const maxEmbeddedCharsPerFile = 12000
 
 // Build creates an enriched system prompt from base prompt + runtime resources.
-func Build(basePrompt string, info selfknowledge.Info, snapshot resources.Snapshot) string {
+func Build(basePrompt string, cwd string, info selfknowledge.Info, snapshot resources.Snapshot) string {
 	basePrompt = strings.TrimSpace(basePrompt)
 	var b strings.Builder
 	b.WriteString(basePrompt)
+
+	if strings.TrimSpace(cwd) != "" {
+		b.WriteString("\n\nCurrent working directory:\n- ")
+		b.WriteString(strings.TrimSpace(cwd))
+	}
 
 	if section := strings.TrimSpace(selfknowledge.BuildPromptSection(info)); section != "" {
 		b.WriteString("\n\n")

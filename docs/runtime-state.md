@@ -9,6 +9,11 @@ This document describes the machine-readable runtime surfaces that Codex and oth
 - `./simple-agent doctor --json`
 - `/cancel` in the TUI for deterministic in-band interruption
 
+Runtime guarantees:
+
+- file tools operate relative to the current working directory and reject paths outside that workspace
+- `models.json` can define named OpenAI-compatible local/remote endpoints that appear in `models list`
+
 ## Private Local State
 
 - `~/.simple-agent/sessions/`

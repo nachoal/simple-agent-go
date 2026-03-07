@@ -45,46 +45,49 @@ func (t *EditTool) Execute(ctx context.Context, params json.RawMessage) (string,
 		return "", NewToolError("VALIDATION_FAILED", "oldText and newText must be different")
 	}
 
-	// Clean the path
-	cleanPath := filepath.Clean(args.Path)
+	resolvedPath, workspace, err := resolveWorkspacePath(args.Path)
+	if err != nil {
+		return "", err
+	}
+	displayPath := displayPathForWorkspace(resolvedPath, workspace)
 
 	// Check if file exists
-	if _, err := os.Stat(cleanPath); os.IsNotExist(err) {
+	if _, err := os.Stat(resolvedPath); os.IsNotExist(err) {
 		// If file doesn't exist, allow creation only when oldText is empty.
 		if args.OldText != "" {
 			return "", NewToolError("FILE_NOT_FOUND", "File does not exist; oldText must be empty to create it").
-				WithDetail("path", cleanPath)
+				WithDetail("path", displayPath)
 		}
 
 		// Create parent directories
-		dir := filepath.Dir(cleanPath)
+		dir := filepath.Dir(resolvedPath)
 		if err := os.MkdirAll(dir, 0755); err != nil {
 			return "", NewToolError("MKDIR_ERROR", "Failed to create parent directories").
 				WithDetail("error", err.Error()).
-				WithDetail("path", cleanPath)
+				WithDetail("path", displayPath)
 		}
 
 		// Write new file
-		if err := os.WriteFile(cleanPath, []byte(args.NewText), 0644); err != nil {
+		if err := os.WriteFile(resolvedPath, []byte(args.NewText), 0644); err != nil {
 			return "", NewToolError("WRITE_ERROR", "Failed to create file").
 				WithDetail("error", err.Error()).
-				WithDetail("path", cleanPath)
+				WithDetail("path", displayPath)
 		}
-		return fmt.Sprintf("Successfully created file %s", cleanPath), nil
+		return fmt.Sprintf("Successfully created file %s", displayPath), nil
 	}
 
 	// Read existing file
-	content, err := os.ReadFile(cleanPath)
+	content, err := os.ReadFile(resolvedPath)
 	if err != nil {
 		return "", NewToolError("READ_ERROR", "Failed to read file").
 			WithDetail("error", err.Error()).
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
 	// Check if oldText is empty for existing file
 	if args.OldText == "" {
 		return "", NewToolError("VALIDATION_FAILED", "Cannot use empty oldText on an existing file").
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
 	// Convert content to string
@@ -93,13 +96,13 @@ func (t *EditTool) Execute(ctx context.Context, params json.RawMessage) (string,
 	// Check if oldText exists in file
 	if !strings.Contains(fileContent, args.OldText) {
 		return "", NewToolError("NOT_FOUND", "oldText not found in file").
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
 	occurrences := strings.Count(fileContent, args.OldText)
 	if occurrences > 1 {
 		return "", NewToolError("NOT_UNIQUE", "oldText occurs more than once; provide a more specific match").
-			WithDetail("path", cleanPath).
+			WithDetail("path", displayPath).
 			WithDetail("occurrences", occurrences)
 	}
 
@@ -107,11 +110,11 @@ func (t *EditTool) Execute(ctx context.Context, params json.RawMessage) (string,
 	newContent := strings.Replace(fileContent, args.OldText, args.NewText, 1)
 
 	// Write the updated content
-	if err := os.WriteFile(cleanPath, []byte(newContent), 0644); err != nil {
+	if err := os.WriteFile(resolvedPath, []byte(newContent), 0644); err != nil {
 		return "", NewToolError("WRITE_ERROR", "Failed to write file").
 			WithDetail("error", err.Error()).
-			WithDetail("path", cleanPath)
+			WithDetail("path", displayPath)
 	}
 
-	return fmt.Sprintf("Successfully replaced text in %s", cleanPath), nil
+	return fmt.Sprintf("Successfully replaced text in %s", displayPath), nil
 }

@@ -17,7 +17,7 @@ func NewReadTool() Tool {
 	return &ReadTool{
 		BaseTool: base.BaseTool{
 			ToolName: "read",
-			ToolDesc: "Read the contents of a file. Supports optional offset/limit for large files. Example: {\"path\":\"file.txt\",\"offset\":1,\"limit\":200}",
+			ToolDesc: "Read the contents of a file within the current working directory. Supports optional offset/limit for large files. Example: {\"path\":\"file.txt\",\"offset\":1,\"limit\":200}",
 		},
 	}
 }
@@ -27,7 +27,7 @@ func NewWriteTool() Tool {
 	return &WriteTool{
 		BaseTool: base.BaseTool{
 			ToolName: "write",
-			ToolDesc: "Create or overwrite a file. Creates parent directories. Example: {\"path\":\"file.txt\",\"content\":\"hello\"}",
+			ToolDesc: "Create or overwrite a file within the current working directory. Creates parent directories. Example: {\"path\":\"file.txt\",\"content\":\"hello\"}",
 		},
 	}
 }
@@ -37,7 +37,7 @@ func NewEditTool() Tool {
 	return &EditTool{
 		BaseTool: base.BaseTool{
 			ToolName: "edit",
-			ToolDesc: "Edit a file by replacing exact oldText with newText (must be unique). Example: {\"path\":\"file.txt\",\"oldText\":\"old\",\"newText\":\"new\"}",
+			ToolDesc: "Edit a file within the current working directory by replacing exact oldText with newText (must be unique). Example: {\"path\":\"file.txt\",\"oldText\":\"old\",\"newText\":\"new\"}",
 		},
 	}
 }
@@ -47,7 +47,7 @@ func NewDirectoryListTool() Tool {
 	return &DirectoryListTool{
 		BaseTool: base.BaseTool{
 			ToolName: "directory_list",
-			ToolDesc: "List files and directories. Input must be JSON with optional 'path' field. Example: {\"path\": \"directory\"} or {} for current directory.",
+			ToolDesc: "List files and directories within the current working directory. Input must be JSON with optional 'path' field. Example: {\"path\": \"directory\"} or {} for current directory.",
 		},
 	}
 }
@@ -77,7 +77,9 @@ func NewBashTool() Tool {
 
 	desc := "Execute bash commands safely with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
 	if yolo {
-		desc = "Execute bash commands (UNSAFE: --yolo enabled; any command allowed) with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
+		desc = "Execute bash commands in the current working directory (UNSAFE: --yolo enabled; any command allowed) with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
+	} else {
+		desc = "Execute bash commands in the current working directory safely with timeout and output capture. Example: {\"command\":\"ls -la\",\"timeout\":30}"
 	}
 
 	return &BashTool{

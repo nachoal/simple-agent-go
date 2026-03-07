@@ -3,6 +3,8 @@
 ## Public OSS Validation
 
 - `go test ./...`
+- `go test ./agent -run Test(Query_RecoversMalformedToolCallFromContent|Query_UsesConfiguredRequestTimeout)$`
+- `go test ./tools -run Test(WriteTool_BlocksPathsOutsideWorkspace|ReadTool_BlocksPathsOutsideWorkspace|EditTool_BlocksPathsOutsideWorkspace|DirectoryListTool_BlocksPathsOutsideWorkspace|WriteTool_UsesWorkspaceRelativePath)$`
 - `go build -o ./simple-agent ./cmd/simple-agent`
 - `./simple-agent tools list`
 - `./simple-agent tools list --json`

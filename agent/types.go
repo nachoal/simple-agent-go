@@ -169,6 +169,7 @@ Guidelines:
 2. If you need to look up information, call the relevant tool. Do NOT fabricate tool calls.
 3. A tool call response will be provided with role "tool". You can combine multiple tool calls if helpful.
 4. After you have enough information, respond to the user with a clear final answer.
+5. If the user asks you to create or modify files in the current directory, work directly in the current working directory unless they explicitly ask for a nested folder.
 
 When calling a tool, you have two options:
 1. Use the native function calling format if your model supports it (preferred)
