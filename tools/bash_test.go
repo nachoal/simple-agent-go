@@ -97,3 +97,45 @@ func TestBashTool_AllowsInstaloaderWithFailFastFlags(t *testing.T) {
 		t.Fatalf("expected successful exit code in output, got:\n%s", out)
 	}
 }
+
+func TestBashTool_BlocksInteractiveTailFollow(t *testing.T) {
+	tool := &BashTool{
+		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
+		allowedCommands: nil,
+		allowAll:        true,
+	}
+
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"tail -f /tmp/example.log","timeout":30}`))
+	if err == nil {
+		t.Fatalf("expected interactive command error, got nil")
+	}
+
+	te, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected *ToolError, got %T (%v)", err, err)
+	}
+	if te.Code != "COMMAND_INTERACTIVE" {
+		t.Fatalf("expected COMMAND_INTERACTIVE, got %q", te.Code)
+	}
+}
+
+func TestBashTool_BlocksInteractiveGitCommitWithoutMessage(t *testing.T) {
+	tool := &BashTool{
+		BaseTool:        base.BaseTool{ToolName: "bash", ToolDesc: "test"},
+		allowedCommands: nil,
+		allowAll:        true,
+	}
+
+	_, err := tool.Execute(context.Background(), json.RawMessage(`{"command":"git commit","timeout":30}`))
+	if err == nil {
+		t.Fatalf("expected interactive git commit error, got nil")
+	}
+
+	te, ok := err.(*ToolError)
+	if !ok {
+		t.Fatalf("expected *ToolError, got %T (%v)", err, err)
+	}
+	if te.Code != "COMMAND_INTERACTIVE" {
+		t.Fatalf("expected COMMAND_INTERACTIVE, got %q", te.Code)
+	}
+}

@@ -148,6 +148,47 @@ func (t *BashTool) Execute(ctx context.Context, params json.RawMessage) (string,
 func validateCommandSafety(command string) error {
 	lower := strings.ToLower(command)
 
+	interactiveHints := []struct {
+		pattern string
+		example string
+	}{
+		{pattern: " tail -f", example: "tail -n 200 <file>"},
+		{pattern: "tail -f ", example: "tail -n 200 <file>"},
+		{pattern: " watch ", example: "run a bounded command instead of watch"},
+		{pattern: "watch ", example: "run a bounded command instead of watch"},
+		{pattern: "vim ", example: "use the edit tool or a non-interactive command"},
+		{pattern: "nano ", example: "use the edit tool or a non-interactive command"},
+		{pattern: "less ", example: "use sed, head, or tail without interactive paging"},
+		{pattern: "more ", example: "use sed, head, or tail without interactive paging"},
+		{pattern: "top", example: "use ps or a bounded sampling command"},
+		{pattern: "ssh ", example: "run a non-interactive local command or use an explicit remote automation tool"},
+		{pattern: "sftp ", example: "use a non-interactive transfer command"},
+		{pattern: "tmux attach", example: "run tmux list-sessions or start a detached session"},
+	}
+	for _, hint := range interactiveHints {
+		if strings.HasPrefix(lower, hint.pattern) || strings.Contains(lower, hint.pattern) {
+			return NewToolError(
+				"COMMAND_INTERACTIVE",
+				"Command looks interactive or long-lived; use a bounded non-interactive variant",
+			).
+				WithDetail("command", command).
+				WithDetail("example", hint.example)
+		}
+	}
+
+	if strings.HasPrefix(lower, "git commit") &&
+		!strings.Contains(lower, " -m ") &&
+		!strings.Contains(lower, " --message ") &&
+		!strings.Contains(lower, " -f ") &&
+		!strings.Contains(lower, " --file ") {
+		return NewToolError(
+			"COMMAND_INTERACTIVE",
+			"`git commit` without a message/file can open an editor and block the agent",
+		).
+			WithDetail("command", command).
+			WithDetail("example", "git commit -m \"message\"")
+	}
+
 	// Instaloader can enter very long retry/backoff loops (e.g. 429 -> retry in 30 min)
 	// when stories/highlights are requested without fail-fast flags.
 	if strings.Contains(lower, "instaloader") &&
