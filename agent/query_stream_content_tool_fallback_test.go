@@ -39,8 +39,9 @@ func (streamContentFallbackTool) Execute(_ context.Context, params json.RawMessa
 }
 
 type contentFallbackStreamClient struct {
-	mu    sync.Mutex
-	calls int
+	mu      sync.Mutex
+	calls   int
+	payload string
 }
 
 func (c *contentFallbackStreamClient) Chat(context.Context, *llm.ChatRequest) (*llm.ChatResponse, error) {
@@ -59,7 +60,10 @@ func (c *contentFallbackStreamClient) ChatStream(_ context.Context, _ *llm.ChatR
 
 		switch call {
 		case 1:
-			payload := `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping"}}`
+			payload := c.payload
+			if payload == "" {
+				payload = `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping"}}`
+			}
 			ch <- llm.StreamEvent{
 				Choices: []llm.Choice{
 					{
@@ -144,6 +148,63 @@ func TestQueryStream_ParsesToolCallFromContentWhenStreaming(t *testing.T) {
 	}
 	if !sawComplete {
 		t.Fatalf("expected stream to emit completion event")
+	}
+
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.calls < 2 {
+		t.Fatalf("expected at least 2 stream calls (tool call + final response), got %d", client.calls)
+	}
+}
+
+func TestQueryStream_RecoversMalformedToolCallFromContentWhenStreaming(t *testing.T) {
+	if err := registry.Register(streamContentFallbackToolName, func() tools.Tool {
+		return streamContentFallbackTool{}
+	}); err != nil && !strings.Contains(err.Error(), "already registered") {
+		t.Fatalf("failed to register test tool: %v", err)
+	}
+
+	client := &contentFallbackStreamClient{
+		payload: `{"name":"` + streamContentFallbackToolName + `","arguments":{"input":"ping"}</arg_value></tool_call>`,
+	}
+	a := New(client,
+		WithTools([]string{streamContentFallbackToolName}),
+		WithMaxIterations(4),
+		WithMaxToolCalls(4),
+	)
+
+	stream, err := a.QueryStream(context.Background(), "use the tool")
+	if err != nil {
+		t.Fatalf("QueryStream returned error: %v", err)
+	}
+
+	sawToolStart := false
+	sawToolResult := false
+	sawComplete := false
+
+	for event := range stream {
+		switch event.Type {
+		case EventTypeToolStart:
+			if event.Tool != nil && event.Tool.Name == streamContentFallbackToolName {
+				sawToolStart = true
+			}
+		case EventTypeToolResult:
+			if event.Tool != nil && event.Tool.Name == streamContentFallbackToolName && event.Tool.Result == "handled:ping" {
+				sawToolResult = true
+			}
+		case EventTypeComplete:
+			sawComplete = true
+		}
+	}
+
+	if !sawToolStart {
+		t.Fatalf("expected malformed content to still emit tool start event")
+	}
+	if !sawToolResult {
+		t.Fatalf("expected malformed content to still emit successful tool result event")
+	}
+	if !sawComplete {
+		t.Fatalf("expected malformed content stream to complete")
 	}
 
 	client.mu.Lock()

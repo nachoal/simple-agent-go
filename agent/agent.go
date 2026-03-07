@@ -897,36 +897,30 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 		}
 	}
 
-	// Try to parse as single JSON object
-	var singleCall struct {
-		Name      string          `json:"name"`
-		Arguments json.RawMessage `json:"arguments"`
-		ID        string          `json:"id,omitempty"`
-	}
-
 	content = strings.TrimSpace(content)
-	if err := json.Unmarshal([]byte(content), &singleCall); err == nil && singleCall.Name != "" {
+	if toolCall, err := parseSingleToolCallJSON(content); err == nil {
 		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 			fmt.Fprintf(os.Stderr, "[Agent] Successfully parsed single JSON tool call\n")
 		}
-
-		id := singleCall.ID
-		if id == "" {
-			id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
-		}
-		_, normalizedArgs := llm.NormalizeToolArguments(singleCall.Arguments)
-
-		toolCalls = append(toolCalls, llm.ToolCall{
-			ID:   id,
-			Type: "function",
-			Function: llm.FunctionCall{
-				Name:      singleCall.Name,
-				Arguments: normalizedArgs,
-			},
-		})
+		toolCalls = append(toolCalls, toolCall)
 		return toolCalls
-	} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && err != nil {
+	} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
 		fmt.Fprintf(os.Stderr, "[Agent] Failed to parse as single JSON: %v\n", err)
+	}
+
+	if candidate, ok := extractRecoveredToolCallJSON(content); ok {
+		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[Agent] Retrying tool call parse with recovered JSON: %s\n", candidate)
+		}
+		if toolCall, err := parseSingleToolCallJSON(candidate); err == nil {
+			if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+				fmt.Fprintf(os.Stderr, "[Agent] Successfully parsed recovered JSON tool call\n")
+			}
+			toolCalls = append(toolCalls, toolCall)
+			return toolCalls
+		} else if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+			fmt.Fprintf(os.Stderr, "[Agent] Failed to parse recovered JSON: %v\n", err)
+		}
 	}
 
 	// Try multiple JSON objects with regex
@@ -964,6 +958,124 @@ func (a *agent) parseToolCallsFromContent(content string) []llm.ToolCall {
 	}
 
 	return toolCalls
+}
+
+func parseSingleToolCallJSON(content string) (llm.ToolCall, error) {
+	var singleCall struct {
+		Name      string          `json:"name"`
+		Arguments json.RawMessage `json:"arguments"`
+		ID        string          `json:"id,omitempty"`
+	}
+
+	if err := json.Unmarshal([]byte(content), &singleCall); err != nil {
+		return llm.ToolCall{}, err
+	}
+
+	name := strings.TrimSpace(singleCall.Name)
+	if name == "" {
+		return llm.ToolCall{}, fmt.Errorf("missing tool name")
+	}
+
+	id := strings.TrimSpace(singleCall.ID)
+	if id == "" {
+		id = fmt.Sprintf("call_%d_%d", time.Now().Unix(), rand.Intn(1000))
+	}
+	_, normalizedArgs := llm.NormalizeToolArguments(singleCall.Arguments)
+
+	return llm.ToolCall{
+		ID:   id,
+		Type: "function",
+		Function: llm.FunctionCall{
+			Name:      name,
+			Arguments: normalizedArgs,
+		},
+	}, nil
+}
+
+func extractRecoveredToolCallJSON(content string) (string, bool) {
+	start := strings.Index(content, "{")
+	if start < 0 {
+		return "", false
+	}
+
+	var b strings.Builder
+	depth := 0
+	inString := false
+	escaped := false
+	started := false
+
+	for i := start; i < len(content); i++ {
+		ch := content[i]
+
+		if !started {
+			if ch != '{' {
+				continue
+			}
+			started = true
+			depth = 1
+			b.WriteByte(ch)
+			continue
+		}
+
+		b.WriteByte(ch)
+
+		if escaped {
+			escaped = false
+			continue
+		}
+
+		if ch == '\\' && inString {
+			escaped = true
+			continue
+		}
+
+		if ch == '"' {
+			inString = !inString
+			continue
+		}
+
+		if inString {
+			continue
+		}
+
+		switch ch {
+		case '{':
+			depth++
+		case '}':
+			depth--
+			if depth == 0 {
+				candidate := b.String()
+				if strings.Contains(candidate, `"name"`) && strings.Contains(candidate, `"arguments"`) {
+					return candidate, true
+				}
+				return "", false
+			}
+		case '<':
+			// Some local models append XML-ish tool tags after emitting JSON.
+			// Stop before the tag and repair any missing closing braces below.
+			candidate := strings.TrimSpace(strings.TrimSuffix(b.String(), "<"))
+			if candidate == "" || !strings.Contains(candidate, `"name"`) || !strings.Contains(candidate, `"arguments"`) {
+				return "", false
+			}
+			if depth > 0 {
+				candidate += strings.Repeat("}", depth)
+			}
+			return candidate, true
+		}
+	}
+
+	if !started {
+		return "", false
+	}
+
+	candidate := strings.TrimSpace(b.String())
+	if candidate == "" || !strings.Contains(candidate, `"name"`) || !strings.Contains(candidate, `"arguments"`) {
+		return "", false
+	}
+	if depth > 0 {
+		candidate += strings.Repeat("}", depth)
+	}
+	return candidate, true
 }
 
 func sanitizeLLMToolCalls(toolCalls []llm.ToolCall) []llm.ToolCall {
