@@ -119,6 +119,60 @@ func (m *Manager) SaveSession(session *Session) error {
 	return nil
 }
 
+// BeginRun appends and persists a new run record for the session.
+func (m *Manager) BeginRun(session *Session, runID, mode, prompt, tracePath string) error {
+	if session == nil {
+		return nil
+	}
+	if strings.TrimSpace(runID) == "" {
+		runID = fmt.Sprintf("run_%s", generateRandomID(8))
+	}
+
+	session.Runs = append(session.Runs, Run{
+		ID:        runID,
+		Mode:      strings.TrimSpace(mode),
+		Prompt:    strings.TrimSpace(prompt),
+		TracePath: strings.TrimSpace(tracePath),
+		StartedAt: time.Now(),
+		Status:    RunStatusRunning,
+	})
+	session.Metadata.LastRunID = runID
+	session.Metadata.LastRunStatus = RunStatusRunning
+	session.Metadata.LastRunAt = time.Now()
+
+	return m.SaveSession(session)
+}
+
+// FinishRun updates and persists the final status for a run record.
+func (m *Manager) FinishRun(session *Session, runID string, status RunStatus, err error) error {
+	if session == nil {
+		return nil
+	}
+	if strings.TrimSpace(runID) == "" {
+		return nil
+	}
+
+	for i := len(session.Runs) - 1; i >= 0; i-- {
+		if session.Runs[i].ID != runID {
+			continue
+		}
+		session.Runs[i].FinishedAt = time.Now()
+		session.Runs[i].Status = status
+		if err != nil {
+			session.Runs[i].Error = err.Error()
+		} else {
+			session.Runs[i].Error = ""
+		}
+		break
+	}
+
+	session.Metadata.LastRunID = runID
+	session.Metadata.LastRunStatus = status
+	session.Metadata.LastRunAt = time.Now()
+
+	return m.SaveSession(session)
+}
+
 // LoadSession loads a session from disk
 func (m *Manager) LoadSession(id string) (*Session, error) {
 	m.mu.RLock()
@@ -181,13 +235,14 @@ func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
 		}
 
 		sessions = append(sessions, SessionInfo{
-			ID:        session.ID,
-			Title:     session.Metadata.Title,
-			CreatedAt: session.CreatedAt,
-			UpdatedAt: session.UpdatedAt,
-			Messages:  len(session.Messages),
-			Provider:  session.Provider,
-			Model:     session.Model,
+			ID:            session.ID,
+			Title:         session.Metadata.Title,
+			CreatedAt:     session.CreatedAt,
+			UpdatedAt:     session.UpdatedAt,
+			Messages:      len(session.Messages),
+			Provider:      session.Provider,
+			Model:         session.Model,
+			LastRunStatus: session.Metadata.LastRunStatus,
 		})
 	}
 

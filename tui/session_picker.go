@@ -126,13 +126,18 @@ func (p SessionPicker) View() string {
 		}
 
 		// Format session info
-		line := fmt.Sprintf("%s%s - %s (%d messages, %s/%s)",
+		status := ""
+		if session.LastRunStatus != "" {
+			status = fmt.Sprintf(", %s", session.LastRunStatus)
+		}
+		line := fmt.Sprintf("%s%s - %s (%d messages, %s/%s%s)",
 			cursor,
 			session.CreatedAt.Format("Jan 02 15:04"),
 			truncateString(session.Title, 40),
 			session.Messages,
 			session.Provider,
-			session.Model)
+			session.Model,
+			status)
 
 		b.WriteString(style.Render(line))
 		b.WriteString("\n")

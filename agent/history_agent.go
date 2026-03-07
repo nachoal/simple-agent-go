@@ -2,10 +2,13 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/nachoal/simple-agent-go/history"
+	"github.com/nachoal/simple-agent-go/internal/runlog"
 )
 
 // HistoryAgent wraps an agent with conversation history support
@@ -32,6 +35,8 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 		initialMessageCount = len(ha.currentSession.Messages)
 	}
 
+	runID := ha.beginRun(ctx, "query", query)
+
 	// Execute query first
 	response, err := ha.Agent.Query(ctx, query)
 
@@ -45,7 +50,7 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 		ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
 
 		// Save session with complete history
-		if saveErr := ha.historyManager.SaveSession(ha.currentSession); saveErr != nil {
+		if saveErr := ha.historyManager.FinishRun(ha.currentSession, runID, history.RunStatusCompleted, nil); saveErr != nil {
 			// Log error but don't fail the query
 			fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", saveErr)
 			fmt.Fprintf(os.Stderr, "Your conversation may not be saved. Please check disk space and permissions.\n\n")
@@ -53,6 +58,9 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 	} else if err != nil && ha.currentSession != nil {
 		// Query failed - rollback to initial state
 		ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+		if saveErr := ha.historyManager.FinishRun(ha.currentSession, runID, statusFromRunError(ctx, err), err); saveErr != nil {
+			fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", saveErr)
+		}
 	}
 
 	return response, err
@@ -65,6 +73,8 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 	if ha.currentSession != nil {
 		initialMessageCount = len(ha.currentSession.Messages)
 	}
+
+	runID := ha.beginRun(ctx, "query", query)
 
 	// Get the stream
 	events, err := ha.Agent.QueryStream(ctx, query)
@@ -79,6 +89,7 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 		defer close(intercepted)
 
 		streamSucceeded := false
+		runFinalized := false
 
 		for event := range events {
 			// Forward the event
@@ -94,7 +105,7 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 					ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
 
 					// Save session with complete history
-					if err := ha.historyManager.SaveSession(ha.currentSession); err != nil {
+					if err := ha.historyManager.FinishRun(ha.currentSession, runID, history.RunStatusCompleted, nil); err != nil {
 						// Send error event through the stream
 						intercepted <- StreamEvent{
 							Type:  EventTypeError,
@@ -103,11 +114,16 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 						// Also log to stderr
 						fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
 					}
+					runFinalized = true
 				}
 			case EventTypeError:
 				// Stream failed - rollback the session
 				if ha.currentSession != nil && !streamSucceeded {
 					ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+					if err := ha.historyManager.FinishRun(ha.currentSession, runID, statusFromRunError(ctx, event.Error), event.Error); err != nil {
+						fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
+					}
+					runFinalized = true
 				}
 			}
 		}
@@ -115,10 +131,66 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 		// If stream ended without completion or error, rollback
 		if !streamSucceeded && ha.currentSession != nil {
 			ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+			if !runFinalized {
+				runErr := ctx.Err()
+				status := statusFromRunError(ctx, runErr)
+				if runErr == nil {
+					status = history.RunStatusInterrupted
+				}
+				if err := ha.historyManager.FinishRun(ha.currentSession, runID, status, runErr); err != nil {
+					fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
+				}
+			}
 		}
 	}()
 
 	return intercepted, nil
+}
+
+func (ha *HistoryAgent) beginRun(ctx context.Context, fallbackMode, prompt string) string {
+	if ha.currentSession == nil || ha.historyManager == nil {
+		return ""
+	}
+
+	runID := ""
+	mode := fallbackMode
+	tracePath := ""
+	if meta, ok := runlog.MetadataFromContext(ctx); ok {
+		runID = meta.RunID
+		if strings.TrimSpace(meta.Mode) != "" {
+			mode = meta.Mode
+		}
+		tracePath = meta.TracePath
+	}
+
+	if err := ha.historyManager.BeginRun(ha.currentSession, runID, mode, prompt, tracePath); err != nil {
+		fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to start conversation run history: %v\n", err)
+	}
+	if meta, ok := runlog.MetadataFromContext(ctx); ok && strings.TrimSpace(meta.RunID) != "" {
+		return meta.RunID
+	}
+	return ha.currentSession.Metadata.LastRunID
+}
+
+func statusFromRunError(ctx context.Context, err error) history.RunStatus {
+	if ctx != nil {
+		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return history.RunStatusTimedOut
+		}
+		if errors.Is(ctx.Err(), context.Canceled) {
+			return history.RunStatusCancelled
+		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return history.RunStatusTimedOut
+	}
+	if errors.Is(err, context.Canceled) {
+		return history.RunStatusCancelled
+	}
+	if err != nil {
+		return history.RunStatusFailed
+	}
+	return history.RunStatusCompleted
 }
 
 // GetSession returns the current session

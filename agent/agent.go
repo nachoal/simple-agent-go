@@ -14,6 +14,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/nachoal/simple-agent-go/internal/runlog"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools"
 	"github.com/nachoal/simple-agent-go/tools/registry"
@@ -88,7 +89,6 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 	if ch, ok := ctx.Value("toolEventChan").(chan StreamEvent); ok {
 		streamChan = ch // nil if UI isn't streaming
 	}
-
 	// Get available tools if configured
 	var availableTools []map[string]interface{}
 	if len(a.config.Tools) > 0 {
@@ -131,6 +131,12 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 			Tools:       availableTools,
 			ToolChoice:  toolChoice,
 		}
+		logAgentEvent(ctx, "llm_request", map[string]interface{}{
+			"mode":          "query",
+			"iteration":     iteration + 1,
+			"message_count": len(request.Messages),
+			"tool_count":    len(availableTools),
+		})
 
 		// Debug log available tools
 		if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" && len(availableTools) > 0 {
@@ -145,8 +151,21 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 		// Send request to LLM
 		response, err := a.client.Chat(ctx, request)
 		if err != nil {
+			logAgentEvent(ctx, "llm_error", map[string]interface{}{
+				"mode":      "query",
+				"iteration": iteration + 1,
+				"error":     err.Error(),
+			})
 			return nil, fmt.Errorf("LLM request failed: %w", err)
 		}
+		logAgentEvent(ctx, "llm_response", map[string]interface{}{
+			"mode":              "query",
+			"iteration":         iteration + 1,
+			"choice_count":      len(response.Choices),
+			"prompt_tokens":     usageValue(response.Usage, "prompt"),
+			"completion_tokens": usageValue(response.Usage, "completion"),
+			"total_tokens":      usageValue(response.Usage, "total"),
+		})
 
 		// Update usage
 		if response.Usage != nil {
@@ -215,6 +234,12 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 					Name:      tc.Function.Name,
 					Arguments: tc.Function.Arguments,
 				}
+				logAgentEvent(ctx, "tool_start", map[string]interface{}{
+					"mode":     "query",
+					"tool_id":  tc.ID,
+					"tool":     tc.Function.Name,
+					"args_raw": string(tc.Function.Arguments),
+				})
 
 				// Emit progress event for individual tool call
 				a.emitProgress(ProgressEvent{
@@ -233,6 +258,18 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 				if result.Error != nil {
 					content = fmt.Sprintf("Error: %v", result.Error)
 				}
+				toolFields := map[string]interface{}{
+					"mode":        "query",
+					"tool_id":     result.ID,
+					"tool":        result.Name,
+					"result_size": len(content),
+					"status":      "completed",
+				}
+				if result.Error != nil {
+					toolFields["status"] = "error"
+					toolFields["error"] = result.Error.Error()
+				}
+				logAgentEvent(ctx, "tool_result", toolFields)
 
 				a.addMessage(llm.Message{
 					Role:       llm.RoleTool,
@@ -276,13 +313,16 @@ func (a *agent) Query(ctx context.Context, query string) (*Response, error) {
 		}, nil
 	}
 
+	logAgentEvent(ctx, "agent_error", map[string]interface{}{
+		"mode":  "query",
+		"error": fmt.Sprintf("max iterations (%d) reached without completion", a.config.MaxIterations),
+	})
 	return nil, fmt.Errorf("max iterations (%d) reached without completion", a.config.MaxIterations)
 }
 
 // QueryStream sends a query and streams the response
 func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEvent, error) {
 	originalMemory := a.GetMemory()
-
 	// Add user message to memory
 	a.addMessage(llm.Message{
 		Role:    llm.RoleUser,
@@ -312,6 +352,11 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			// If the run was explicitly canceled, drop partial turn state so the
 			// next user message does not inherit an interrupted prompt.
 			if !completed && ctx.Err() != nil {
+				logAgentEvent(ctx, "run_complete", map[string]interface{}{
+					"mode":   "stream",
+					"status": "cancelled",
+					"error":  ctx.Err().Error(),
+				})
 				a.SetMemory(originalMemory)
 			}
 		}()
@@ -332,10 +377,21 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 				ToolChoice:  "auto",
 				Stream:      true,
 			}
+			logAgentEvent(ctx, "llm_request", map[string]interface{}{
+				"mode":          "stream",
+				"iteration":     iteration + 1,
+				"message_count": len(request.Messages),
+				"tool_count":    len(availableTools),
+			})
 
 			// Send streaming request to LLM
 			streamEvents, err := a.client.ChatStream(ctx, request)
 			if err != nil {
+				logAgentEvent(ctx, "llm_error", map[string]interface{}{
+					"mode":      "stream",
+					"iteration": iteration + 1,
+					"error":     err.Error(),
+				})
 				events <- StreamEvent{
 					Type:  EventTypeError,
 					Error: fmt.Errorf("LLM stream request failed: %w", err),
@@ -482,6 +538,12 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 							ArgsRaw: string(normalizedArgs),
 						},
 					}
+					logAgentEvent(ctx, "tool_start", map[string]interface{}{
+						"mode":     "stream",
+						"tool_id":  tc.ID,
+						"tool":     tc.Function.Name,
+						"args_raw": string(normalizedArgs),
+					})
 				}
 
 				// Execute tools
@@ -504,6 +566,18 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 							Error:  result.Error,
 						},
 					}
+					toolFields := map[string]interface{}{
+						"mode":        "stream",
+						"tool_id":     result.ID,
+						"tool":        result.Name,
+						"result_size": len(content),
+						"status":      "completed",
+					}
+					if result.Error != nil {
+						toolFields["status"] = "error"
+						toolFields["error"] = result.Error.Error()
+					}
+					logAgentEvent(ctx, "tool_result", toolFields)
 
 					// Add to memory
 					a.addMessage(llm.Message{
@@ -521,11 +595,19 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 			events <- StreamEvent{
 				Type: EventTypeComplete,
 			}
+			logAgentEvent(ctx, "run_complete", map[string]interface{}{
+				"mode":   "stream",
+				"status": "completed",
+			})
 			completed = true
 			return
 		}
 
 		// Max iterations reached
+		logAgentEvent(ctx, "agent_error", map[string]interface{}{
+			"mode":  "stream",
+			"error": fmt.Sprintf("max iterations (%d) reached", a.config.MaxIterations),
+		})
 		events <- StreamEvent{
 			Type:  EventTypeError,
 			Error: fmt.Errorf("max iterations (%d) reached", a.config.MaxIterations),
@@ -825,6 +907,26 @@ func (a *agent) SetMemory(messages []llm.Message) {
 	// Update token count if needed
 	// TODO: Implement token counting
 	a.memory.TokenCount = 0
+}
+
+func logAgentEvent(ctx context.Context, kind string, fields map[string]interface{}) {
+	runlog.EventFromContext(ctx, kind, fields)
+}
+
+func usageValue(usage *llm.Usage, part string) int {
+	if usage == nil {
+		return 0
+	}
+	switch part {
+	case "prompt":
+		return usage.PromptTokens
+	case "completion":
+		return usage.CompletionTokens
+	case "total":
+		return usage.TotalTokens
+	default:
+		return 0
+	}
 }
 
 // parseToolCallsFromContent attempts to parse tool calls from content

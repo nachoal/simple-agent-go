@@ -25,6 +25,7 @@ import (
 	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/history"
 	"github.com/nachoal/simple-agent-go/internal/improve"
+	"github.com/nachoal/simple-agent-go/internal/runlog"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/tools/registry"
 )
@@ -110,6 +111,7 @@ type BorderedTUI struct {
 	traceFile       *os.File
 	tracePath       string
 	traceMu         *sync.Mutex
+	runLogger       *runlog.Logger
 
 	// Transient notice displayed above prompt bar
 	transientNotice   string
@@ -275,9 +277,16 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		suggestIndex:   0,
 	}
 
+	if cwd, err := os.Getwd(); err == nil {
+		if logger, err := runlog.New(cwd, "tui"); err == nil {
+			tui.runLogger = logger
+		}
+	}
+
 	// Define available slash commands for autocomplete
 	tui.commands = []commandEntry{
 		{name: "/help", desc: "Show this help"},
+		{name: "/cancel", desc: "Cancel the active run"},
 		{name: "/tools", desc: "List available tools"},
 		{name: "/model", desc: "Change model interactively"},
 		{name: "/reload", desc: "Reload context/resources/models"},
@@ -624,6 +633,14 @@ func (m *BorderedTUI) closeTraceLogger() {
 	m.traceFile = nil
 }
 
+func (m *BorderedTUI) closeRunLogger() {
+	if m.runLogger == nil {
+		return
+	}
+	_ = m.runLogger.Close()
+	m.runLogger = nil
+}
+
 func (m *BorderedTUI) tracef(format string, args ...interface{}) {
 	if m.traceFile == nil || m.traceMu == nil {
 		return
@@ -651,9 +668,27 @@ func (m *BorderedTUI) beginRun(mode, prompt string) (context.Context, string) {
 	m.runSeq++
 	runID := "run-" + strconv.Itoa(m.runSeq)
 	ctx, cancel := context.WithCancel(context.Background())
+	ctx = runlog.WithContext(ctx, m.runLogger)
+	meta := runlog.Metadata{
+		RunID:    runID,
+		Mode:     mode,
+		Prompt:   prompt,
+		Provider: m.provider,
+		Model:    m.model,
+	}
+	if m.runLogger != nil {
+		meta.TracePath = m.runLogger.Path()
+	}
+	if historyAgent, ok := m.agent.(*agent.HistoryAgent); ok {
+		if session := historyAgent.GetSession(); session != nil {
+			meta.SessionID = session.ID
+		}
+	}
+	ctx = runlog.WithMetadata(ctx, meta)
 	m.activeRunCancel = cancel
 	m.activeRunID = runID
 	m.tracef("run_start id=%s mode=%s prompt=%q", runID, mode, truncateForTrace(prompt, 512))
+	runlog.EventFromContext(ctx, "run_start", map[string]interface{}{"ui_mode": "tui"})
 	return ctx, runID
 }
 
@@ -662,6 +697,12 @@ func (m *BorderedTUI) cancelActiveRun(reason string) bool {
 		return false
 	}
 	m.tracef("run_cancel_request id=%s reason=%s", m.activeRunID, reason)
+	if m.runLogger != nil {
+		m.runLogger.Event("run_cancel_request", map[string]interface{}{
+			"run_id": m.activeRunID,
+			"reason": reason,
+		})
+	}
 	cancel := m.activeRunCancel
 	m.activeRunCancel = nil
 	cancel()
@@ -860,6 +901,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeyCtrlC, tea.KeyCtrlQ:
 			m.tracef("app_quit key=%s", msg.Type.String())
 			m.closeTraceLogger()
+			m.closeRunLogger()
 			return m, tea.Quit
 
 		case tea.KeyEsc:
@@ -879,6 +921,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			m.tracef("app_quit key=esc")
 			m.closeTraceLogger()
+			m.closeRunLogger()
 			return m, tea.Quit
 
 		case tea.KeyUp:
@@ -925,9 +968,20 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		case tea.KeyEnter:
 			// Send the message on Enter
+			value := m.textarea.Value()
+			trimmed := strings.TrimSpace(value)
+			if m.isThinking && strings.EqualFold(trimmed, "/cancel") {
+				m.textarea.Reset()
+				m.textarea.SetHeight(1)
+				m.textarea.Blur()
+				m.suggestVisible = false
+				m.suggestItems = nil
+				m.suggestIndex = 0
+				resp := m.handleCommand("/cancel")
+				cmds = append(cmds, func() tea.Msg { return resp })
+				return m, tea.Batch(cmds...)
+			}
 			if !m.isThinking {
-				value := m.textarea.Value()
-				trimmed := strings.TrimSpace(value)
 				if trimmed != "" {
 					// If suggestions are visible for a slash command, Enter executes the selected
 					// command only when the input is just a single token (no arguments yet).
@@ -1068,6 +1122,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 
 			m.tracef("run_end id=%s status=ok mode=stream response_len=%d", runID, len(finalContent))
+			if m.runLogger != nil {
+				m.runLogger.Event("run_end", map[string]interface{}{
+					"run_id":       runID,
+					"mode":         "stream",
+					"status":       "completed",
+					"response_len": len(finalContent),
+				})
+			}
 			m.isThinking = false
 			m.showingTools = false
 			m.clearActiveRun()
@@ -1081,6 +1143,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			terminal = true
 			if msg.event.Error != nil {
 				m.tracef("run_end id=%s status=error err=%q", runID, msg.event.Error.Error())
+				if m.runLogger != nil {
+					m.runLogger.Event("run_end", map[string]interface{}{
+						"run_id": runID,
+						"mode":   "stream",
+						"status": "error",
+						"error":  msg.event.Error.Error(),
+					})
+				}
 			}
 			m.isThinking = false
 			m.showingTools = false
@@ -1220,6 +1290,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.isQuit {
 			m.tracef("app_quit command=/exit")
 			m.closeTraceLogger()
+			m.closeRunLogger()
 			return m, tea.Quit
 		}
 
@@ -1522,6 +1593,14 @@ func (m *BorderedTUI) sendMessage(runCtx context.Context, runID, input string) t
 		stream, err := m.agent.QueryStream(runCtx, trimmed)
 		if err != nil {
 			m.tracef("run_end id=%s status=error err=%q", runID, err.Error())
+			if m.runLogger != nil {
+				m.runLogger.Event("run_end", map[string]interface{}{
+					"run_id": runID,
+					"mode":   "stream",
+					"status": "error",
+					"error":  err.Error(),
+				})
+			}
 			return borderedResponseMsg{err: err}
 		}
 
@@ -1549,6 +1628,13 @@ func (m *BorderedTUI) sendMultimodal(runCtx context.Context, runID, input string
 		select {
 		case <-runCtx.Done():
 			m.tracef("run_end id=%s status=cancelled before_multimodal_call", runID)
+			if m.runLogger != nil {
+				m.runLogger.Event("run_end", map[string]interface{}{
+					"run_id": runID,
+					"mode":   "multimodal",
+					"status": "cancelled",
+				})
+			}
 			return borderedResponseMsg{err: context.Canceled}
 		default:
 		}
@@ -1557,6 +1643,14 @@ func (m *BorderedTUI) sendMultimodal(runCtx context.Context, runID, input string
 		mm, ok := any(m.llmClient).(llm.MultimodalClient)
 		if !ok {
 			m.tracef("run_end id=%s status=error err=%q", runID, "this provider client does not support images")
+			if m.runLogger != nil {
+				m.runLogger.Event("run_end", map[string]interface{}{
+					"run_id": runID,
+					"mode":   "multimodal",
+					"status": "error",
+					"error":  "this provider client does not support images",
+				})
+			}
 			return borderedResponseMsg{err: fmt.Errorf("this provider client does not support images")}
 		}
 
@@ -1574,6 +1668,14 @@ func (m *BorderedTUI) sendMultimodal(runCtx context.Context, runID, input string
 		out, err := mm.ChatWithImages(prompt, imgs, map[string]interface{}{})
 		if err != nil {
 			m.tracef("run_end id=%s status=error err=%q", runID, err.Error())
+			if m.runLogger != nil {
+				m.runLogger.Event("run_end", map[string]interface{}{
+					"run_id": runID,
+					"mode":   "multimodal",
+					"status": "error",
+					"error":  err.Error(),
+				})
+			}
 			return borderedResponseMsg{err: err}
 		}
 
@@ -1586,6 +1688,14 @@ func (m *BorderedTUI) sendMultimodal(runCtx context.Context, runID, input string
 		m.agent.SetMemory(mem)
 
 		m.tracef("run_end id=%s status=ok mode=multimodal response_len=%d", runID, len(out))
+		if m.runLogger != nil {
+			m.runLogger.Event("run_end", map[string]interface{}{
+				"run_id":       runID,
+				"mode":         "multimodal",
+				"status":       "completed",
+				"response_len": len(out),
+			})
+		}
 		return borderedResponseMsg{content: out, clearAttachments: true}
 	}
 }
@@ -1603,12 +1713,18 @@ func (m *BorderedTUI) handleCommand(cmd string) borderedResponseMsg {
 	case "/exit", "/quit":
 		// Return a special message type that will trigger quit
 		return borderedResponseMsg{content: "", isQuit: true}
+	case "/cancel":
+		if !m.cancelActiveRun("command") {
+			return borderedResponseMsg{content: "No active run to cancel.", isCommand: true}
+		}
+		return borderedResponseMsg{content: "Cancellation requested.", isCommand: true}
 	case "/clear":
 		// Return a special message type that will trigger clear
 		return borderedResponseMsg{content: "", isClear: true}
 	case "/help":
 		help := `Commands:
   /help    - Show this help
+  /cancel  - Cancel the active run
   /tools   - List available tools
   /model   - Change model interactively
   /reload  - Reload context/resources/models
@@ -1663,6 +1779,9 @@ Keyboard shortcuts:
 		if m.tracePath != "" {
 			statusMsg = fmt.Sprintf("%s\n  Trace: %s", statusMsg, m.tracePath)
 		}
+		if m.runLogger != nil {
+			statusMsg = fmt.Sprintf("%s\n  RunLog: %s", statusMsg, m.runLogger.Path())
+		}
 		if supportsThinkingToggle(m.provider, m.model) {
 			thinkingState := "Off"
 			if m.thinkingEnabled {
@@ -1707,10 +1826,17 @@ Keyboard shortcuts:
 			return borderedResponseMsg{content: "Verbose mode: ON\nDebug output will be shown in the terminal", isCommand: true}
 		}
 	case "/trace":
-		if m.tracePath == "" {
+		if m.tracePath == "" && (m.runLogger == nil || m.runLogger.Path() == "") {
 			return borderedResponseMsg{content: "Trace logging is OFF (set SIMPLE_AGENT_TRACE=1 or use --verbose).", isCommand: true}
 		}
-		return borderedResponseMsg{content: fmt.Sprintf("Trace log: %s", m.tracePath), isCommand: true}
+		lines := []string{}
+		if m.tracePath != "" {
+			lines = append(lines, fmt.Sprintf("Trace log: %s", m.tracePath))
+		}
+		if m.runLogger != nil && m.runLogger.Path() != "" {
+			lines = append(lines, fmt.Sprintf("Run log: %s", m.runLogger.Path()))
+		}
+		return borderedResponseMsg{content: strings.Join(lines, "\n"), isCommand: true}
 	case "/attachments":
 		if len(m.attachments) == 0 {
 			return borderedResponseMsg{content: "No images attached", isCommand: true}
