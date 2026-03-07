@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"sort"
@@ -16,11 +17,14 @@ import (
 	"github.com/nachoal/simple-agent-go/agent"
 	"github.com/nachoal/simple-agent-go/config"
 	"github.com/nachoal/simple-agent-go/history"
+	"github.com/nachoal/simple-agent-go/internal/harnessllm"
 	"github.com/nachoal/simple-agent-go/internal/models"
 	"github.com/nachoal/simple-agent-go/internal/resources"
+	"github.com/nachoal/simple-agent-go/internal/runlog"
 	"github.com/nachoal/simple-agent-go/internal/runtimeprompt"
 	"github.com/nachoal/simple-agent-go/internal/selfknowledge"
 	"github.com/nachoal/simple-agent-go/internal/toolinit"
+	"github.com/nachoal/simple-agent-go/internal/userpaths"
 	"github.com/nachoal/simple-agent-go/llm"
 	"github.com/nachoal/simple-agent-go/llm/anthropic"
 	"github.com/nachoal/simple-agent-go/llm/deepseek"
@@ -48,6 +52,9 @@ var (
 	toolsFlag    string
 	maxTokens    int
 	timeoutMins  int
+	toolsJSON    bool
+	doctorJSON   bool
+	modelsJSON   bool
 
 	customModelRegistry *models.Registry
 
@@ -93,6 +100,23 @@ var (
 		Short: "List available tools",
 		Run:   listTools,
 	}
+
+	modelsCmd = &cobra.Command{
+		Use:   "models",
+		Short: "Model inspection commands",
+	}
+
+	listModelsCmd = &cobra.Command{
+		Use:   "list",
+		Short: "List available models by provider",
+		RunE:  runListModels,
+	}
+
+	doctorCmd = &cobra.Command{
+		Use:   "doctor",
+		Short: "Show machine-readable runtime diagnostics",
+		RunE:  runDoctor,
+	}
 )
 
 func init() {
@@ -124,7 +148,13 @@ func init() {
 	// Add subcommands
 	rootCmd.AddCommand(queryCmd)
 	rootCmd.AddCommand(toolsCmd)
+	rootCmd.AddCommand(modelsCmd)
+	rootCmd.AddCommand(doctorCmd)
 	toolsCmd.AddCommand(listToolsCmd)
+	modelsCmd.AddCommand(listModelsCmd)
+	listToolsCmd.Flags().BoolVar(&toolsJSON, "json", false, "Output tools as JSON")
+	listModelsCmd.Flags().BoolVar(&modelsJSON, "json", false, "Output models as JSON")
+	doctorCmd.Flags().BoolVar(&doctorJSON, "json", false, "Output diagnostics as JSON")
 
 	// Bind flags to viper
 	viper.BindPFlags(rootCmd.PersistentFlags())
@@ -521,6 +551,11 @@ func runQuery(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to get current directory: %w", err)
 	}
 
+	queryLogger, loggerErr := runlog.New(cwd, "query")
+	if loggerErr == nil {
+		defer queryLogger.Close()
+	}
+
 	resourceLoader, err := resources.NewLoader(cwd, "")
 	if err != nil {
 		return fmt.Errorf("failed to initialize resource loader: %w", err)
@@ -621,13 +656,43 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 	// Execute query
 	ctx := context.Background()
+	runID := fmt.Sprintf("query-%d", time.Now().UnixNano())
+	if queryLogger != nil {
+		ctx = runlog.WithContext(ctx, queryLogger)
+		ctx = runlog.WithMetadata(ctx, runlog.Metadata{
+			RunID:     runID,
+			Mode:      "query",
+			Prompt:    query,
+			Provider:  provider,
+			Model:     model,
+			TracePath: queryLogger.Path(),
+		})
+		runlog.EventFromContext(ctx, "run_start", nil)
+	}
 	response, err := agentInstance.Query(ctx, query)
 	if err != nil {
+		if queryLogger != nil {
+			runlog.EventFromContext(ctx, "run_end", map[string]interface{}{
+				"status": "error",
+				"error":  err.Error(),
+			})
+		}
 		return fmt.Errorf("query failed: %w", err)
 	}
 
 	// Print response
 	fmt.Println(response.Content)
+
+	if queryLogger != nil {
+		fields := map[string]interface{}{
+			"status":       "completed",
+			"response_len": len(response.Content),
+		}
+		if response.Usage != nil {
+			fields["total_tokens"] = response.Usage.TotalTokens
+		}
+		runlog.EventFromContext(ctx, "run_end", fields)
+	}
 
 	if verbose && response.Usage != nil {
 		fmt.Printf("\n[Tokens: %d]\n", response.Usage.TotalTokens)
@@ -638,6 +703,28 @@ func runQuery(cmd *cobra.Command, args []string) error {
 
 func listTools(cmd *cobra.Command, args []string) {
 	toolNames := registry.List()
+
+	if toolsJSON {
+		sort.Strings(toolNames)
+		payload := make([]map[string]string, 0, len(toolNames))
+		for _, name := range toolNames {
+			tool, err := registry.Get(name)
+			if err != nil || tool == nil {
+				continue
+			}
+			payload = append(payload, map[string]string{
+				"name":        name,
+				"description": tool.Description(),
+			})
+		}
+		data, err := json.MarshalIndent(payload, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Error: failed to marshal tools: %v\n", err)
+			return
+		}
+		fmt.Println(string(data))
+		return
+	}
 
 	fmt.Println("Available tools:")
 
@@ -672,6 +759,165 @@ func listTools(cmd *cobra.Command, args []string) {
 		paddedName := fmt.Sprintf("%-15s", name)
 		fmt.Printf("  %s %s - %s\n", icon, paddedName, tool.Description())
 	}
+}
+
+type doctorReport struct {
+	Cwd             string   `json:"cwd"`
+	ConfigDir       string   `json:"config_dir"`
+	AgentDir        string   `json:"agent_dir"`
+	HarnessDir      string   `json:"harness_dir"`
+	DefaultProvider string   `json:"default_provider"`
+	DefaultModel    string   `json:"default_model"`
+	RegisteredTools []string `json:"registered_tools"`
+	ContextFiles    []string `json:"context_files"`
+	PromptFragments []string `json:"prompt_fragments"`
+}
+
+type providerModelsReport struct {
+	Provider string      `json:"provider"`
+	Error    string      `json:"error,omitempty"`
+	Models   []llm.Model `json:"models,omitempty"`
+}
+
+func runDoctor(cmd *cobra.Command, args []string) error {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to get current directory: %w", err)
+	}
+
+	configDir, err := userpaths.ConfigDir()
+	if err != nil {
+		return err
+	}
+	agentDir, err := userpaths.AgentDir()
+	if err != nil {
+		return err
+	}
+	harnessDir, err := userpaths.HarnessDir(cwd)
+	if err != nil {
+		return err
+	}
+	configManager, err := config.NewManager()
+	if err != nil {
+		return err
+	}
+	loader, err := resources.NewLoader(cwd, "")
+	if err != nil {
+		return err
+	}
+	snapshot := loader.Snapshot()
+
+	report := doctorReport{
+		Cwd:             cwd,
+		ConfigDir:       configDir,
+		AgentDir:        agentDir,
+		HarnessDir:      harnessDir,
+		DefaultProvider: configManager.GetDefaultProvider(),
+		DefaultModel:    configManager.GetDefaultModel(),
+		RegisteredTools: registry.List(),
+		ContextFiles:    collectLoadedPaths(snapshot.ContextFiles),
+		PromptFragments: collectLoadedPaths(snapshot.PromptFragments),
+	}
+	sort.Strings(report.RegisteredTools)
+
+	if doctorJSON {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal doctor report: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	fmt.Printf("Cwd: %s\n", report.Cwd)
+	fmt.Printf("ConfigDir: %s\n", report.ConfigDir)
+	fmt.Printf("AgentDir: %s\n", report.AgentDir)
+	fmt.Printf("HarnessDir: %s\n", report.HarnessDir)
+	fmt.Printf("DefaultProvider: %s\n", report.DefaultProvider)
+	fmt.Printf("DefaultModel: %s\n", report.DefaultModel)
+	fmt.Printf("RegisteredTools: %d\n", len(report.RegisteredTools))
+	for _, path := range report.ContextFiles {
+		fmt.Printf("ContextFile: %s\n", path)
+	}
+	for _, path := range report.PromptFragments {
+		fmt.Printf("PromptFragment: %s\n", path)
+	}
+	return nil
+}
+
+func runListModels(cmd *cobra.Command, args []string) error {
+	modelsPath, err := models.DefaultModelsPath()
+	if err != nil {
+		return fmt.Errorf("failed to resolve models config path: %w", err)
+	}
+	customModelRegistry = models.NewRegistry(modelsPath)
+	if err := customModelRegistry.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
+	staticModels := map[string][]llm.Model{}
+	if customModelRegistry != nil {
+		staticModels = customModelRegistry.StaticModels()
+	}
+
+	report := make([]providerModelsReport, 0, len(allProviderNames()))
+	for _, providerName := range allProviderNames() {
+		entry := providerModelsReport{Provider: providerName}
+		if modelsForProvider, ok := staticModels[providerName]; ok && len(modelsForProvider) > 0 {
+			entry.Models = modelsForProvider
+		} else {
+			entry.Models = []llm.Model{{ID: getDefaultModel(providerName)}}
+		}
+		report = append(report, entry)
+	}
+
+	if modelsJSON {
+		data, err := json.MarshalIndent(report, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal models report: %w", err)
+		}
+		fmt.Println(string(data))
+		return nil
+	}
+
+	for _, entry := range report {
+		fmt.Printf("%s:\n", entry.Provider)
+		if entry.Error != "" {
+			fmt.Printf("  error: %s\n", entry.Error)
+			continue
+		}
+		if len(entry.Models) == 0 {
+			fmt.Println("  (no models)")
+			continue
+		}
+		sort.Slice(entry.Models, func(i, j int) bool {
+			return entry.Models[i].ID < entry.Models[j].ID
+		})
+		for _, model := range entry.Models {
+			fmt.Printf("  - %s\n", model.ID)
+		}
+	}
+
+	return nil
+}
+
+func collectLoadedPaths(files []resources.LoadedFile) []string {
+	out := make([]string, 0, len(files))
+	for _, file := range files {
+		out = append(out, file.Path)
+	}
+	return out
+}
+
+func truncateForQueryLog(input string, max int) string {
+	input = strings.Join(strings.Fields(strings.TrimSpace(input)), " ")
+	if max <= 0 || len(input) <= max {
+		return input
+	}
+	if max <= 3 {
+		return input[:max]
+	}
+	return input[:max-3] + "..."
 }
 
 func parseToolsOverride(raw string) ([]string, bool, error) {
@@ -724,6 +970,10 @@ func parseToolsOverride(raw string) ([]string, bool, error) {
 }
 
 func createLLMClient(provider, model string) (llm.Client, error) {
+	if harnessllm.Enabled() {
+		return harnessllm.New(llm.WithModel(model))
+	}
+
 	normalizedProvider := canonicalProvider(provider)
 
 	if customModelRegistry != nil {
