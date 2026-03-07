@@ -1,0 +1,50 @@
+[
+  {
+    "name": "agent-stream-toolcall-fallback",
+    "description": "Streamed tool-call fallback and malformed recovery stay green",
+    "command": ["go", "test", "./agent", "-run", "TestQueryStream_(ParsesToolCallFromContentWhenStreaming|RecoversMalformedToolCallFromContentWhenStreaming|RollsBackMemoryOnCancel)$"]
+  },
+  {
+    "name": "bash-interactivity-guards",
+    "description": "Interactive or long-lived bash commands are rejected before hanging the agent",
+    "command": ["go", "test", "./tools", "-run", "TestBashTool_(BlocksRiskyInstaloaderWithoutFailFastFlags|BlocksInteractiveTailFollow|BlocksInteractiveGitCommitWithoutMessage)$"]
+  },
+  {
+    "name": "structured-runlog",
+    "description": "Agent query and stream paths emit structured JSONL run logs",
+    "command": ["go", "test", "./agent", "-run", "Test(Query_WritesStructuredRunLog|QueryStream_WritesToolEventsToRunLog)$"]
+  },
+  {
+    "name": "history-run-status",
+    "description": "Session history persists explicit run state",
+    "command": ["go", "test", "./history", "-run", "TestManagerBeginAndFinishRun$"]
+  },
+  {
+    "name": "tui-cancel-and-stream-stability",
+    "description": "TUI cancel flow returns quickly and streaming updates do not panic",
+    "command": ["go", "test", "./tui", "-run", "Test(SendMessageReturnsOnCancelledContext|UpdateStreamingMessageDoesNotPanicOnModelCopy)$"]
+  },
+  {
+    "name": "tui-pty-interrupt-continue",
+    "description": "Real TUI binary handles ESC interrupt and --continue resume in a PTY",
+    "command": ["go", "run", "./scripts/run_tui_smoke", "--binary", "${BINARY}"]
+  },
+  {
+    "name": "cli-tools-json",
+    "description": "Tool inventory is machine-readable",
+    "command": ["${BINARY}", "tools", "list", "--json"],
+    "expect_json": true
+  },
+  {
+    "name": "cli-models-json",
+    "description": "Model inventory is machine-readable",
+    "command": ["${BINARY}", "models", "list", "--json"],
+    "expect_json": true
+  },
+  {
+    "name": "cli-doctor-json",
+    "description": "Runtime diagnostics are machine-readable",
+    "command": ["${BINARY}", "doctor", "--json"],
+    "expect_json": true
+  }
+]

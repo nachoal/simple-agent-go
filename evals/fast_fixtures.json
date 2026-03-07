@@ -1,0 +1,14 @@
+[
+  {
+    "name": "cli-tools-json",
+    "description": "Tool inventory is machine-readable",
+    "command": ["${BINARY}", "tools", "list", "--json"],
+    "expect_json": true
+  },
+  {
+    "name": "cli-doctor-json",
+    "description": "Runtime diagnostics are machine-readable",
+    "command": ["${BINARY}", "doctor", "--json"],
+    "expect_json": true
+  }
+]

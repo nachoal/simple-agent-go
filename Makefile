@@ -1,4 +1,4 @@
-.PHONY: build run test clean install lint fmt vet
+.PHONY: build run test clean install lint fmt vet smoke harness harness-fast harness-private evals
 
 # Build variables
 BINARY_NAME=simple-agent
@@ -62,6 +62,22 @@ fmt:
 
 vet:
 	$(GOVET) ./...
+
+smoke: build
+	./$(BINARY_NAME) tools list
+	./$(BINARY_NAME) --help >/dev/null
+
+harness:
+	go run ./scripts/run_harness --mode public
+
+harness-fast:
+	go run ./scripts/run_harness --mode fast
+
+harness-private:
+	go run ./scripts/run_harness --mode private
+
+evals: build
+	SIMPLE_AGENT_BINARY=./$(BINARY_NAME) go run ./scripts/run_public_evals --json
 
 # Development helpers
 dev-deps:
