@@ -240,6 +240,42 @@ func (p *MyProvider) GetAvailableModels(ctx context.Context) ([]Model, error) {
 
 ## 📚 Advanced Usage
 
+### Maintainer Harness
+
+Public OSS verification:
+
+```bash
+make harness
+```
+
+Fast local verification:
+
+```bash
+make harness-fast
+```
+
+Private local harness, including Codex session analysis stored outside the repo:
+
+```bash
+make harness-private
+```
+
+Opt-in live LM Studio canary inside the private harness:
+
+```bash
+SIMPLE_AGENT_ENABLE_LIVE_CANARIES=1 make harness-private
+```
+
+Related docs:
+
+- `docs/architecture.md`
+- `docs/harness-benchmark.md`
+- `docs/harness-engineering-task-list.md`
+- `docs/codex-analysis.md`
+- `docs/validation-matrix.md`
+- `docs/runtime-state.md`
+- `docs/AGENTS.md`
+
 ### As a Library
 
 ```go
