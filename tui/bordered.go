@@ -346,6 +346,12 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 				if msg.Content != nil {
 					content = *msg.Content
 				}
+				if msg.Role == "assistant" && strings.TrimSpace(content) == "" {
+					continue
+				}
+				if msg.Role != "user" && msg.Role != "assistant" {
+					continue
+				}
 
 				// Also populate historyForAgent for context
 				tui.historyForAgent = append(tui.historyForAgent, llm.Message{
@@ -839,28 +845,9 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case modelSelectedMsg:
-		// Model was selected, update our state
-		m.provider = msg.provider
-		m.model = msg.model
-		m.tracef("model_switch provider=%s model=%s", msg.provider, msg.model)
-
-		// Save to config if we have a config manager
-		if m.configManager != nil {
-			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
-				// We'll print the error with the success message
-				m.err = fmt.Errorf("failed to save config: %w", err)
-			}
-		}
-
-		// Update the agent with the new model
-		if newClient, ok := m.providers[msg.provider]; ok {
-			m.llmClient = newClient
-			m.agent = agent.New(newClient,
-				agent.WithMaxIterations(1000),
-				agent.WithMaxToolCalls(1000),
-				agent.WithTemperature(0.7),
-			)
-			m.baseRequestParams = m.agent.GetRequestParams()
+		if err := m.switchModel(msg.provider, msg.model); err != nil {
+			m.textarea.Focus()
+			return m, printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err)))
 		}
 		m.supportsVision = m.computeVisionSupport()
 		m.applyModelDefaults()
@@ -1357,48 +1344,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, tea.ExitAltScreen
 
 	case selectorConfirmMsg:
-		// Apply selected provider/model
-		m.provider = msg.provider
-		m.model = msg.model
-		m.tracef("model_switch provider=%s model=%s", msg.provider, msg.model)
-		// Save to config if available
-		if m.configManager != nil {
-			if err := m.configManager.SetDefaults(msg.provider, msg.model); err != nil {
-				m.err = fmt.Errorf("failed to save config: %w", err)
-			}
-		}
-		// Update agent client with selected provider/model.
-		var newClient llm.Client
-		if m.clientFactory != nil {
-			client, err := m.clientFactory(msg.provider, msg.model)
-			if err != nil {
-				m.showModelSelector = false
-				m.selector = nil
-				m.textarea.Focus()
-				return m, tea.Batch(
-					tea.ExitAltScreen,
-					printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err))),
-				)
-			}
-			newClient = client
-		} else if existing, ok := m.providers[msg.provider]; ok {
-			newClient = existing
-		}
-
-		if newClient != nil {
-			m.llmClient = newClient
-			systemPrompt := agent.DefaultConfig().SystemPrompt
-			if m.systemPromptBuilder != nil {
-				systemPrompt = m.systemPromptBuilder()
-			}
-			m.agent = agent.New(newClient,
-				agent.WithModel(msg.model),
-				agent.WithSystemPrompt(systemPrompt),
-				agent.WithMaxIterations(1000),
-				agent.WithMaxToolCalls(1000),
-				agent.WithTemperature(0.7),
+		if err := m.switchModel(msg.provider, msg.model); err != nil {
+			m.showModelSelector = false
+			m.selector = nil
+			m.textarea.Focus()
+			return m, tea.Batch(
+				tea.ExitAltScreen,
+				printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err))),
 			)
-			m.baseRequestParams = m.agent.GetRequestParams()
 		}
 		m.supportsVision = m.computeVisionSupport()
 		m.applyModelDefaults()
@@ -1573,6 +1526,68 @@ func (m *BorderedTUI) resetToolTrackingForNextQuery() {
 	m.toolsUsedInLastQuery = make(map[string]time.Duration)
 	m.activeTools = make(map[string]*ActiveTool)
 	m.completedTools = []CompletedTool{}
+}
+
+func (m *BorderedTUI) switchModel(provider, model string) error {
+	m.provider = provider
+	m.model = model
+	m.tracef("model_switch provider=%s model=%s", provider, model)
+
+	if m.configManager != nil {
+		if err := m.configManager.SetDefaults(provider, model); err != nil {
+			m.err = fmt.Errorf("failed to save config: %w", err)
+		}
+	}
+
+	var newClient llm.Client
+	if m.clientFactory != nil {
+		client, err := m.clientFactory(provider, model)
+		if err != nil {
+			return err
+		}
+		newClient = client
+	} else if existing, ok := m.providers[provider]; ok {
+		newClient = existing
+	}
+	if newClient == nil {
+		return fmt.Errorf("no client available for provider %s", provider)
+	}
+
+	systemPrompt := agent.DefaultConfig().SystemPrompt
+	if m.systemPromptBuilder != nil {
+		systemPrompt = m.systemPromptBuilder()
+	}
+
+	currentMemory := m.agent.GetMemory()
+	replacement := agent.New(newClient,
+		agent.WithModel(model),
+		agent.WithSystemPrompt(systemPrompt),
+		agent.WithMaxIterations(1000),
+		agent.WithMaxToolCalls(1000),
+		agent.WithTemperature(0.7),
+	)
+	if len(currentMemory) > 0 {
+		replacement.SetMemory(currentMemory)
+		replacement.SetSystemPrompt(systemPrompt)
+	}
+
+	if historyAgent, ok := m.agent.(*agent.HistoryAgent); ok {
+		historyAgent.ReplaceAgent(replacement)
+		if session := historyAgent.GetSession(); session != nil {
+			session.Provider = provider
+			session.Model = model
+			if err := historyAgent.SaveSessionMetadata(); err != nil {
+				return fmt.Errorf("persist session metadata: %w", err)
+			}
+		}
+		m.agent = historyAgent
+	} else {
+		m.agent = replacement
+	}
+
+	m.llmClient = newClient
+	m.baseRequestParams = m.agent.GetRequestParams()
+	return nil
 }
 
 func (m *BorderedTUI) sendMessage(runCtx context.Context, runID, input string) tea.Cmd {

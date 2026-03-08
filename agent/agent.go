@@ -357,10 +357,12 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 	go func() {
 		defer close(events)
 		completed := false
+		committedTurnState := false
 		defer func() {
 			// If the run was explicitly canceled, drop partial turn state so the
-			// next user message does not inherit an interrupted prompt.
-			if !completed && ctx.Err() != nil {
+			// next user message does not inherit an interrupted prompt unless the
+			// assistant/tool state had already been committed to memory.
+			if !completed && ctx.Err() != nil && !committedTurnState {
 				logAgentEvent(ctx, "run_complete", map[string]interface{}{
 					"mode":   "stream",
 					"status": "cancelled",
@@ -517,6 +519,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 				Message: cloneLLMMessageForStream(assistantMsg),
 			}
 			a.addMessage(assistantMsg)
+			committedTurnState = true
 
 			// Execute tools if needed
 			if len(toolCalls) > 0 {
@@ -598,6 +601,7 @@ func (a *agent) QueryStream(ctx context.Context, query string) (<-chan StreamEve
 						Content:    llm.StringPtr(content),
 						ToolCallID: result.ID,
 					})
+					committedTurnState = true
 				}
 
 				// Continue to next iteration

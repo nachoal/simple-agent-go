@@ -70,6 +70,7 @@ func (ha *HistoryAgent) Query(ctx context.Context, query string) (*Response, err
 func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan StreamEvent, error) {
 	// Remember the initial message count to rollback on failure
 	initialMessageCount := 0
+	initialAgentMessageCount := len(ha.Agent.GetMemory())
 	if ha.currentSession != nil {
 		initialMessageCount = len(ha.currentSession.Messages)
 	}
@@ -90,6 +91,19 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 
 		streamSucceeded := false
 		runFinalized := false
+		syncOrRollback := func() {
+			if ha.currentSession == nil {
+				return
+			}
+
+			agentMemory := ha.Agent.GetMemory()
+			if len(agentMemory) > initialAgentMessageCount {
+				ha.currentSession.Messages = ha.historyManager.ConvertFromLLMMessages(agentMemory)
+				return
+			}
+
+			ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+		}
 
 		for event := range events {
 			// Forward the event
@@ -119,7 +133,7 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 			case EventTypeError:
 				// Stream failed - rollback the session
 				if ha.currentSession != nil && !streamSucceeded {
-					ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+					syncOrRollback()
 					if err := ha.historyManager.FinishRun(ha.currentSession, runID, statusFromRunError(ctx, event.Error), event.Error); err != nil {
 						fmt.Fprintf(os.Stderr, "\n[WARNING] Failed to save conversation history: %v\n", err)
 					}
@@ -130,7 +144,7 @@ func (ha *HistoryAgent) QueryStream(ctx context.Context, query string) (<-chan S
 
 		// If stream ended without completion or error, rollback
 		if !streamSucceeded && ha.currentSession != nil {
-			ha.currentSession.Messages = ha.currentSession.Messages[:initialMessageCount]
+			syncOrRollback()
 			if !runFinalized {
 				runErr := ctx.Err()
 				status := statusFromRunError(ctx, runErr)
@@ -203,6 +217,19 @@ func (ha *HistoryAgent) SetSession(session *history.Session) {
 	ha.currentSession = session
 }
 
+// ReplaceAgent swaps the wrapped runtime agent while keeping the current session.
+func (ha *HistoryAgent) ReplaceAgent(agent Agent) {
+	ha.Agent = agent
+}
+
+// SaveSessionMetadata persists updated session metadata such as provider/model.
+func (ha *HistoryAgent) SaveSessionMetadata() error {
+	if ha.currentSession == nil || ha.historyManager == nil {
+		return nil
+	}
+	return ha.historyManager.SaveSession(ha.currentSession)
+}
+
 // RestoreMemoryFromSession restores the agent's memory from a session
 func (ha *HistoryAgent) RestoreMemoryFromSession(session *history.Session) {
 	if session == nil || len(session.Messages) == 0 {
@@ -210,7 +237,7 @@ func (ha *HistoryAgent) RestoreMemoryFromSession(session *history.Session) {
 	}
 
 	// Convert and restore messages
-	llmMessages := ha.historyManager.ConvertToLLMMessages(session.Messages)
+	llmMessages := ha.historyManager.ConvertToResumeMessages(session.Messages)
 
 	// Set the memory directly
 	ha.Agent.SetMemory(llmMessages)

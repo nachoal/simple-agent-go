@@ -12,10 +12,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nachoal/simple-agent-go/agent"
+	"github.com/nachoal/simple-agent-go/history"
 	"github.com/nachoal/simple-agent-go/llm"
 )
 
 type blockingStreamAgent struct{}
+type noopLLMClient struct{}
 
 func (blockingStreamAgent) Query(context.Context, string) (*agent.Response, error) { return nil, nil }
 func (blockingStreamAgent) QueryStream(context.Context, string) (<-chan agent.StreamEvent, error) {
@@ -27,6 +29,20 @@ func (blockingStreamAgent) SetSystemPrompt(string)                {}
 func (blockingStreamAgent) SetMemory([]llm.Message)               {}
 func (blockingStreamAgent) SetRequestParams(agent.RequestParams)  {}
 func (blockingStreamAgent) GetRequestParams() agent.RequestParams { return agent.RequestParams{} }
+
+func (noopLLMClient) Chat(context.Context, *llm.ChatRequest) (*llm.ChatResponse, error) {
+	return nil, nil
+}
+
+func (noopLLMClient) ChatStream(context.Context, *llm.ChatRequest) (<-chan llm.StreamEvent, error) {
+	return make(chan llm.StreamEvent), nil
+}
+
+func (noopLLMClient) ListModels(context.Context) ([]llm.Model, error) { return nil, nil }
+func (noopLLMClient) GetModel(context.Context, string) (*llm.Model, error) {
+	return nil, nil
+}
+func (noopLLMClient) Close() error { return nil }
 
 var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
@@ -166,5 +182,79 @@ func TestSendMessageReturnsOnCancelledContext(t *testing.T) {
 		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatalf("timed out waiting for tool event channel close")
+	}
+}
+
+func TestSelectorConfirmPersistsSessionModelAndKeepsHistoryAgent(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	historyMgr, err := history.NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	session, err := historyMgr.StartSession("/tmp/project", "lmstudio", "zai-org/glm-4.7-flash")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	system := "system"
+	user := "who is she?"
+	assistantMsg := "We were discussing a surgeon."
+	baseMemory := []llm.Message{
+		{Role: llm.RoleSystem, Content: &system},
+		{Role: llm.RoleUser, Content: &user},
+		{Role: llm.RoleAssistant, Content: &assistantMsg},
+	}
+	session.Messages = historyMgr.ConvertFromLLMMessages(baseMemory)
+	if err := historyMgr.SaveSession(session); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	baseAgent := agent.New(noopLLMClient{}, agent.WithModel(session.Model), agent.WithSystemPrompt(system))
+	baseAgent.SetMemory(baseMemory)
+	historyAgent := agent.NewHistoryAgent(baseAgent, historyMgr, session)
+
+	tuiModel := NewBorderedTUIWithHistory(noopLLMClient{}, historyAgent, session.Provider, session.Model, map[string]llm.Client{}, nil)
+	tuiModel.SetClientFactory(func(providerName, modelName string) (llm.Client, error) {
+		return noopLLMClient{}, nil
+	})
+	tuiModel.SetSystemPromptBuilder(func() string { return system })
+
+	updatedModel, _ := tuiModel.Update(selectorConfirmMsg{provider: "ialab", model: "qwen-32b-dense"})
+	var updated *BorderedTUI
+	switch v := updatedModel.(type) {
+	case *BorderedTUI:
+		updated = v
+	case BorderedTUI:
+		updated = &v
+	default:
+		t.Fatalf("expected BorderedTUI, got %T", updatedModel)
+	}
+
+	switchedHistoryAgent, ok := updated.agent.(*agent.HistoryAgent)
+	if !ok {
+		t.Fatalf("expected history agent after switch, got %T", updated.agent)
+	}
+
+	gotMemory := switchedHistoryAgent.GetMemory()
+	if len(gotMemory) != len(baseMemory) {
+		t.Fatalf("expected memory length %d, got %d", len(baseMemory), len(gotMemory))
+	}
+	if gotMemory[len(gotMemory)-1].Content == nil || *gotMemory[len(gotMemory)-1].Content != assistantMsg {
+		t.Fatalf("expected assistant history to persist, got %+v", gotMemory[len(gotMemory)-1])
+	}
+
+	loaded, err := historyMgr.LoadSession(session.ID)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if loaded.Provider != "ialab" {
+		t.Fatalf("expected persisted provider ialab, got %q", loaded.Provider)
+	}
+	if loaded.Model != "qwen-32b-dense" {
+		t.Fatalf("expected persisted model qwen-32b-dense, got %q", loaded.Model)
 	}
 }
