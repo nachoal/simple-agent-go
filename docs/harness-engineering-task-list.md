@@ -18,6 +18,7 @@ This repo now follows a harness-oriented split: public OSS code and CI stay in t
 - [x] Add explicit per-session run status persistence.
 - [x] Add architecture boundary tests.
 - [x] Add a PTY-backed TUI smoke for cancel and continue flows.
+- [x] Add PTY coverage for global `--continue`, printed resume hints, and `--resume <session-id>` flows.
 - [x] Add an opt-in live LM Studio canary to the private harness.
 
 ## Public OSS Harness Surface
@@ -64,5 +65,5 @@ These are the public scenario families the harness is meant to cover without lea
 
 ## Next Public Extensions
 
-- Add richer PTY fixtures for session picker navigation and `/resume` list flows.
+- Add richer PTY fixtures for session picker navigation and bare `--resume` picker flows.
 - Add a dedicated harness report viewer that summarizes regressions from `latest.json` without reading raw JSON.

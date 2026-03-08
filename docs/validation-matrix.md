@@ -12,6 +12,12 @@
 - `./simple-agent doctor --json`
 - `./simple-agent --help`
 - `go run ./scripts/run_tui_smoke --binary ./simple-agent`
+
+The PTY smoke now covers:
+
+- cancel and rollback semantics
+- `--continue` restoring the latest session globally
+- `--resume <session-id>` restoring a specific session and its saved workspace
 - `go run ./scripts/run_public_evals --json`
 
 ## Private Local Validation

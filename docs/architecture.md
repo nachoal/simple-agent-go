@@ -18,6 +18,7 @@ Operational notes:
 
 - The agent applies a per-request LLM timeout from runtime config/CLI (`--timeout`) instead of relying on provider defaults.
 - File mutation/read tools are workspace-scoped to the current working directory so repo-local runs do not escape into unrelated paths.
+- Session resume/continue lives in the product runtime, with persisted sessions under `~/.simple-agent/sessions/`; resuming a session re-enters the saved workspace before the TUI starts.
 
 ## 2. Public OSS Harness
 

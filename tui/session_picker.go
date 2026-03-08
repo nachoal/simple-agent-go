@@ -69,7 +69,7 @@ func (p *SessionPicker) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (p SessionPicker) View() string {
 	if len(p.sessions) == 0 {
-		return "\nNo previous conversations found for this directory.\n\nPress [Esc] to start a new conversation."
+		return "\nNo saved conversations found.\n\nPress [Esc] to start a new conversation."
 	}
 
 	// Styles
@@ -130,10 +130,11 @@ func (p SessionPicker) View() string {
 		if session.LastRunStatus != "" {
 			status = fmt.Sprintf(", %s", session.LastRunStatus)
 		}
-		line := fmt.Sprintf("%s%s - %s (%d messages, %s/%s%s)",
+		line := fmt.Sprintf("%s%s - %s [%s] (%d messages, %s/%s%s)",
 			cursor,
-			session.CreatedAt.Format("Jan 02 15:04"),
+			session.UpdatedAt.Format("Jan 02 15:04"),
 			truncateString(session.Title, 40),
+			truncateString(session.Path, 28),
 			session.Messages,
 			session.Provider,
 			session.Model,

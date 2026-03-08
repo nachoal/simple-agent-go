@@ -79,6 +79,11 @@ func (m *Manager) StartSession(path, provider, model string) (*Session, error) {
 		return nil, fmt.Errorf("failed to update path index: %w", err)
 	}
 
+	// Persist immediately so empty sessions can still be resumed later.
+	if err := m.SaveSession(session); err != nil {
+		return nil, fmt.Errorf("failed to persist session: %w", err)
+	}
+
 	return session, nil
 }
 
@@ -212,6 +217,33 @@ func (m *Manager) GetLastSessionForPath(path string) (*Session, error) {
 	return m.LoadSession(lastID)
 }
 
+// GetLastSession returns the most recently updated session across all paths.
+func (m *Manager) GetLastSession() (*Session, error) {
+	m.mu.RLock()
+	meta, err := m.loadMeta()
+	m.mu.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load meta: %w", err)
+	}
+
+	if strings.TrimSpace(meta.LastSession) != "" {
+		session, err := m.LoadSession(meta.LastSession)
+		if err == nil {
+			return session, nil
+		}
+	}
+
+	sessions, err := m.ListSessions(1)
+	if err != nil {
+		return nil, err
+	}
+	if len(sessions) == 0 {
+		return nil, fmt.Errorf("no sessions found")
+	}
+
+	return m.LoadSession(sessions[0].ID)
+}
+
 // ListSessionsForPath returns all sessions for a given path
 func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
 	m.mu.RLock()
@@ -227,31 +259,32 @@ func (m *Manager) ListSessionsForPath(path string) ([]SessionInfo, error) {
 		return []SessionInfo{}, nil
 	}
 
-	var sessions []SessionInfo
-	for _, id := range sessionIDs {
-		session, err := m.LoadSession(id)
-		if err != nil {
-			continue
-		}
+	return m.loadSessionInfos(sessionIDs, 0), nil
+}
 
-		sessions = append(sessions, SessionInfo{
-			ID:            session.ID,
-			Title:         session.Metadata.Title,
-			CreatedAt:     session.CreatedAt,
-			UpdatedAt:     session.UpdatedAt,
-			Messages:      len(session.Messages),
-			Provider:      session.Provider,
-			Model:         session.Model,
-			LastRunStatus: session.Metadata.LastRunStatus,
-		})
+// ListSessions returns recent sessions across all paths, sorted by last update time.
+// When limit <= 0, all sessions are returned.
+func (m *Manager) ListSessions(limit int) ([]SessionInfo, error) {
+	m.mu.RLock()
+	meta, err := m.loadMeta()
+	m.mu.RUnlock()
+	if err != nil {
+		return nil, fmt.Errorf("failed to load meta: %w", err)
 	}
 
-	// Sort by creation date, newest first
-	sort.Slice(sessions, func(i, j int) bool {
-		return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
-	})
+	seen := make(map[string]struct{})
+	ids := make([]string, 0)
+	for _, sessionIDs := range meta.PathIndex {
+		for _, id := range sessionIDs {
+			if _, ok := seen[id]; ok {
+				continue
+			}
+			seen[id] = struct{}{}
+			ids = append(ids, id)
+		}
+	}
 
-	return sessions, nil
+	return m.loadSessionInfos(ids, limit), nil
 }
 
 // ConvertFromLLMMessages converts LLM messages to history messages
@@ -311,6 +344,39 @@ func (m *Manager) ConvertToLLMMessages(histMessages []Message) []llm.Message {
 	return messages
 }
 
+// ConvertToResumeMessages restores only the conversational transcript that is
+// useful across process restarts. Raw tool-call scaffolding and tool outputs
+// are intentionally omitted because many OpenAI-compatible local models
+// degrade when replaying historical tool protocol messages.
+func (m *Manager) ConvertToResumeMessages(histMessages []Message) []llm.Message {
+	messages := make([]llm.Message, 0, len(histMessages))
+	for _, msg := range histMessages {
+		switch msg.Role {
+		case "system", "user":
+			if msg.Content == nil {
+				continue
+			}
+			messages = append(messages, llm.Message{
+				Role:    llm.Role(msg.Role),
+				Content: llm.StringPtr(*msg.Content),
+			})
+		case "assistant":
+			if msg.Content == nil {
+				continue
+			}
+			content := strings.TrimSpace(*msg.Content)
+			if content == "" {
+				continue
+			}
+			messages = append(messages, llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: llm.StringPtr(*msg.Content),
+			})
+		}
+	}
+	return messages
+}
+
 // Private methods
 
 func (m *Manager) loadMeta() (*MetaIndex, error) {
@@ -353,6 +419,44 @@ func (m *Manager) updatePathIndex(path, sessionID string) error {
 	meta.PathIndex[path] = append(meta.PathIndex[path], sessionID)
 
 	return m.saveMeta(meta)
+}
+
+func (m *Manager) loadSessionInfos(sessionIDs []string, limit int) []SessionInfo {
+	sessions := make([]SessionInfo, 0, len(sessionIDs))
+	for _, id := range sessionIDs {
+		session, err := m.LoadSession(id)
+		if err != nil {
+			continue
+		}
+		sessions = append(sessions, sessionInfoFromSession(session))
+	}
+
+	sort.Slice(sessions, func(i, j int) bool {
+		if sessions[i].UpdatedAt.Equal(sessions[j].UpdatedAt) {
+			return sessions[i].CreatedAt.After(sessions[j].CreatedAt)
+		}
+		return sessions[i].UpdatedAt.After(sessions[j].UpdatedAt)
+	})
+
+	if limit > 0 && len(sessions) > limit {
+		return sessions[:limit]
+	}
+
+	return sessions
+}
+
+func sessionInfoFromSession(session *Session) SessionInfo {
+	return SessionInfo{
+		ID:            session.ID,
+		Title:         session.Metadata.Title,
+		CreatedAt:     session.CreatedAt,
+		UpdatedAt:     session.UpdatedAt,
+		Path:          session.Path,
+		Messages:      len(session.Messages),
+		Provider:      session.Provider,
+		Model:         session.Model,
+		LastRunStatus: session.Metadata.LastRunStatus,
+	}
 }
 
 func (m *Manager) generateTitle(session *Session) string {

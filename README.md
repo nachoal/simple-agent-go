@@ -115,9 +115,23 @@ simple-agent --provider lmstudio --model qwen3.5-27b --timeout 15
 # Quick one-shot query
 simple-agent query "What files are in the current directory?"
 
+# Continue your most recent saved conversation
+simple-agent --continue
+simple-agent -c
+
+# Browse recent saved conversations and pick one
+simple-agent --resume
+simple-agent -r
+
+# Resume a specific saved conversation by session ID
+simple-agent --resume 20260307_101530_abc123
+simple-agent -r 20260307_101530_abc123
+
 # List available tools
 simple-agent tools list
 ```
+
+Interactive sessions are stored under `~/.simple-agent/sessions/`. When you quit the TUI, `simple-agent` prints the exact `--resume <session-id>` command for that conversation. Resumed sessions reopen in the original workspace path so file tools stay anchored to the same project.
 
 ## 🎯 Interactive Mode
 

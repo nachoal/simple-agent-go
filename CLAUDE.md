@@ -137,8 +137,14 @@ simple-agent
 # Start with a specific provider and model
 simple-agent --provider openai --model gpt-4
 
-# Continue your last conversation
+# Continue your most recent conversation
 simple-agent --continue
+
+# Browse recent saved conversations
+simple-agent --resume
+
+# Resume a specific saved conversation by session ID
+simple-agent --resume 20260307_101530_abc123
 
 # One-shot query (no TUI)
 simple-agent query "What is the capital of France?"

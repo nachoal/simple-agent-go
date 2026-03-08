@@ -85,6 +85,7 @@ type SessionInfo struct {
 	Title         string    `json:"title"`
 	CreatedAt     time.Time `json:"created_at"`
 	UpdatedAt     time.Time `json:"updated_at"`
+	Path          string    `json:"path"`
 	Messages      int       `json:"messages"`
 	Provider      string    `json:"provider"`
 	Model         string    `json:"model"`

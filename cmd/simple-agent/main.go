@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -136,8 +137,8 @@ func init() {
 	)
 
 	// TUI-specific flags
-	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue last conversation")
-	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume specific session ID or show picker if no ID provided")
+	rootCmd.Flags().BoolVarP(&continueConv, "continue", "c", false, "Continue the most recent conversation")
+	rootCmd.Flags().StringVarP(&resume, "resume", "r", "", "Resume a specific session ID or open the recent-session picker if no ID is provided")
 	rootCmd.PersistentFlags().StringVar(&customParser, "custom-parser", "", "Enable custom parsing for provider output (e.g., 'lmstudio')")
 	rootCmd.PersistentFlags().IntVar(&maxTokens, "max-tokens", 0, "Max tokens per completion (0 = use default: 8192)")
 	rootCmd.PersistentFlags().IntVar(&timeoutMins, "timeout", 0, "Per-request timeout in minutes (0 = use default: 10)")
@@ -170,6 +171,8 @@ func main() {
 		}
 	}
 
+	rootCmd.SetArgs(normalizeResumeArgs(os.Args[1:]))
+
 	if err := rootCmd.Execute(); err != nil {
 		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
 		os.Exit(1)
@@ -188,29 +191,10 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to create config manager: %w", err)
 	}
 
-	// Resolve working directory once; runtime resources are cwd-aware.
-	cwd, err := os.Getwd()
+	// Resolve launch directory once; resume/continue may re-anchor the runtime later.
+	launchCwd, err := os.Getwd()
 	if err != nil {
 		return fmt.Errorf("failed to get current directory: %w", err)
-	}
-
-	resourceLoader, err := resources.NewLoader(cwd, "")
-	if err != nil {
-		return fmt.Errorf("failed to initialize resource loader: %w", err)
-	}
-	selfInfo := selfknowledge.Discover(cwd)
-
-	modelsPath, err := models.DefaultModelsPath()
-	if err != nil {
-		return fmt.Errorf("failed to resolve models config path: %w", err)
-	}
-	customModelRegistry = models.NewRegistry(modelsPath)
-	if err := customModelRegistry.Reload(); err != nil {
-		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
-	}
-
-	buildSystemPrompt := func() string {
-		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, cwd, selfInfo, resourceLoader.Snapshot())
 	}
 
 	// Get provider and model from config or flags
@@ -236,9 +220,60 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Printf("Using provider: %s, model: %s\n", provider, model)
 	}
 
-	// Create initial LLM client
+	// Initialize history manager
+	historyMgr, err := history.NewManager()
+	if err != nil {
+		return fmt.Errorf("failed to initialize history: %w", err)
+	}
+
+	selection, err := resolveTUISessionSelection(historyMgr, launchCwd)
+	if err != nil {
+		return err
+	}
+
+	if selection.session != nil {
+		if err := activateSessionWorkspace(selection.session); err != nil {
+			return err
+		}
+		if selection.session.Provider != "" {
+			provider = selection.session.Provider
+		}
+		if selection.session.Model != "" {
+			model = selection.session.Model
+		}
+	}
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		return fmt.Errorf("failed to resolve effective working directory: %w", err)
+	}
+
+	if selection.announcement != "" {
+		fmt.Println(selection.announcement)
+	}
+
+	resourceLoader, err := resources.NewLoader(cwd, "")
+	if err != nil {
+		return fmt.Errorf("failed to initialize resource loader: %w", err)
+	}
+	selfInfo := selfknowledge.Discover(cwd)
+
+	modelsPath, err := models.DefaultModelsPath()
+	if err != nil {
+		return fmt.Errorf("failed to resolve models config path: %w", err)
+	}
+	customModelRegistry = models.NewRegistry(modelsPath)
+	if err := customModelRegistry.Reload(); err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: %v\n", err)
+	}
+
+	buildSystemPrompt := func() string {
+		return runtimeprompt.Build(agent.DefaultConfig().SystemPrompt, cwd, selfInfo, resourceLoader.Snapshot())
+	}
+
 	providerSetByFlag := cmd.Flags().Changed("provider")
-	llmClient, provider, model, fallbackMsg, err := createLLMClientWithStartupFallback(provider, model, !providerSetByFlag)
+	allowStartupFallback := !providerSetByFlag || selection.restore
+	llmClient, provider, model, fallbackMsg, err := createLLMClientWithStartupFallback(provider, model, allowStartupFallback)
 	if err != nil {
 		return fmt.Errorf("failed to create %s client: %w", provider, err)
 	}
@@ -246,6 +281,23 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
 	}
 	defer llmClient.Close()
+
+	var session *history.Session
+	if selection.session != nil {
+		session = selection.session
+		if session.Provider != provider || session.Model != model {
+			session.Provider = provider
+			session.Model = model
+			if err := historyMgr.SaveSession(session); err != nil {
+				fmt.Fprintf(os.Stderr, "Warning: failed to persist resumed session metadata: %v\n", err)
+			}
+		}
+	} else {
+		session, err = historyMgr.StartSession(cwd, provider, model)
+		if err != nil {
+			return fmt.Errorf("failed to start session: %w", err)
+		}
+	}
 
 	// Create all provider clients for model selection.
 	providers := make(map[string]llm.Client)
@@ -268,7 +320,6 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	}
 
 	// Create agent
-	// Determine custom parsers
 	enableLMStudioParser := strings.Contains(strings.ToLower(customParser), "lmstudio")
 
 	toolsRaw := strings.TrimSpace(toolsFlag)
@@ -312,150 +363,11 @@ func runTUI(cmd *cobra.Command, args []string) error {
 
 	agentInstance := agent.New(llmClient, buildAgentOptions(model)...)
 
-	// Initialize history manager
-	historyMgr, err := history.NewManager()
-	if err != nil {
-		return fmt.Errorf("failed to initialize history: %w", err)
-	}
-
-	var session *history.Session
-	var historyAgent *agent.HistoryAgent
-
-	// Handle continue/resume flags
-	if continueConv {
-		// Try to load last session for this directory
-		session, err = historyMgr.GetLastSessionForPath(cwd)
-		if err != nil {
-			fmt.Printf("No previous conversation found for this directory.\n")
-			// Start new session
-			session, err = historyMgr.StartSession(cwd, provider, model)
-			if err != nil {
-				return fmt.Errorf("failed to start session: %w", err)
-			}
-		} else {
-			fmt.Printf("Continuing conversation from %s...\n", session.UpdatedAt.Format("Jan 02 15:04"))
-			// Update provider/model from session if different
-			if session.Provider != provider || session.Model != model {
-				provider = session.Provider
-				model = session.Model
-				// Recreate client with session's provider/model
-				llmClient.Close()
-				llmClient, provider, model, fallbackMsg, err = createLLMClientWithStartupFallback(provider, model, true)
-				if err != nil {
-					return fmt.Errorf("failed to create %s client: %w", provider, err)
-				}
-				if fallbackMsg != "" {
-					fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
-					session.Provider = provider
-					session.Model = model
-				}
-				agentInstance = agent.New(llmClient,
-					buildAgentOptions(model)...,
-				)
-			}
-		}
-	} else if resumeSet {
-		// Show session picker if no ID provided, or load specific session
-		if resume == "picker" || resume == "list" || resume == "" {
-			sessions, err := historyMgr.ListSessionsForPath(cwd)
-			if err != nil {
-				return fmt.Errorf("failed to list sessions: %w", err)
-			}
-
-			if len(sessions) == 0 {
-				fmt.Println("No previous conversations found for this directory.")
-				// Start new session
-				session, err = historyMgr.StartSession(cwd, provider, model)
-				if err != nil {
-					return fmt.Errorf("failed to start session: %w", err)
-				}
-			} else {
-				// Show session picker
-				picker := tui.NewSessionPicker(sessions)
-				p := tea.NewProgram(picker)
-
-				pickerModel, err := p.Run()
-				if err != nil {
-					return fmt.Errorf("failed to run session picker: %w", err)
-				}
-
-				// Check if a session was selected
-				if verbose {
-					fmt.Printf("Picker model type: %T\n", pickerModel)
-				}
-				if pickerResult, ok := pickerModel.(*tui.SessionPicker); ok {
-					if verbose {
-						fmt.Printf("Picker result type assertion successful, SelectedSessionID: '%s'\n", pickerResult.SelectedSessionID)
-					}
-					if pickerResult.SelectedSessionID != "" {
-						// Session was selected
-						if verbose {
-							fmt.Printf("Selected session ID: %s\n", pickerResult.SelectedSessionID)
-						}
-						session, err = historyMgr.LoadSession(pickerResult.SelectedSessionID)
-						if err != nil {
-							return fmt.Errorf("failed to load session: %w", err)
-						}
-						fmt.Printf("Resuming session from %s...\n", session.UpdatedAt.Format("Jan 02 15:04"))
-						if verbose {
-							fmt.Printf("Session has %d messages\n", len(session.Messages))
-						}
-					}
-				} else {
-					if verbose {
-						fmt.Printf("Type assertion failed! Model type is: %T\n", pickerModel)
-					}
-				}
-
-				if session == nil {
-					// User cancelled - start new session instead
-					session, err = historyMgr.StartSession(cwd, provider, model)
-					if err != nil {
-						return fmt.Errorf("failed to start session: %w", err)
-					}
-				}
-			}
-		} else {
-			// Load specific session ID
-			session, err = historyMgr.LoadSession(resume)
-			if err != nil {
-				return fmt.Errorf("failed to load session %s: %w", resume, err)
-			}
-		}
-
-		// Update provider/model from session
-		if session != nil {
-			// Always update provider/model from the session
-			provider = session.Provider
-			model = session.Model
-			// Recreate client with session's provider/model
-			llmClient.Close()
-			llmClient, provider, model, fallbackMsg, err = createLLMClientWithStartupFallback(provider, model, true)
-			if err != nil {
-				return fmt.Errorf("failed to create %s client: %w", provider, err)
-			}
-			if fallbackMsg != "" {
-				fmt.Fprintf(os.Stderr, "Warning: %s\n", fallbackMsg)
-				session.Provider = provider
-				session.Model = model
-			}
-			agentInstance = agent.New(llmClient,
-				buildAgentOptions(model)...,
-			)
-		}
-	} else {
-		// Start new session
-		session, err = historyMgr.StartSession(cwd, provider, model)
-		if err != nil {
-			return fmt.Errorf("failed to start session: %w", err)
-		}
-	}
-
 	// Create history-aware agent
-	historyAgent = agent.NewHistoryAgent(agentInstance, historyMgr, session)
+	historyAgent := agent.NewHistoryAgent(agentInstance, historyMgr, session)
 
 	// Restore memory if continuing/resuming
-	if continueConv || resumeSet {
+	if selection.restore {
 		historyAgent.RestoreMemoryFromSession(session)
 		// Session history includes the original system prompt; ensure it's updated for this run's toolset.
 		historyAgent.SetSystemPrompt(buildSystemPrompt())
@@ -530,12 +442,168 @@ func runTUI(cmd *cobra.Command, args []string) error {
 	})
 
 	p := tea.NewProgram(tuiModel)
+	startedAt := time.Now()
 
 	if _, err := p.Run(); err != nil {
 		return fmt.Errorf("error running TUI: %w", err)
 	}
 
+	printSessionResumeFooter(historyAgent.GetSession(), startedAt)
+
 	return nil
+}
+
+type tuiSessionSelection struct {
+	session      *history.Session
+	restore      bool
+	announcement string
+}
+
+func resolveTUISessionSelection(historyMgr *history.Manager, launchCwd string) (tuiSessionSelection, error) {
+	if continueConv && resumeSet {
+		return tuiSessionSelection{}, fmt.Errorf("cannot use --continue and --resume together")
+	}
+
+	if continueConv {
+		session, err := historyMgr.GetLastSession()
+		if err != nil {
+			sessions, listErr := historyMgr.ListSessions(1)
+			if listErr != nil {
+				return tuiSessionSelection{}, fmt.Errorf("failed to list sessions: %w", listErr)
+			}
+			if len(sessions) == 0 {
+				return tuiSessionSelection{announcement: "No previous conversation found. Starting a new conversation."}, nil
+			}
+			return tuiSessionSelection{}, fmt.Errorf("failed to load last session: %w", err)
+		}
+		return tuiSessionSelection{
+			session:      session,
+			restore:      true,
+			announcement: formatSessionAnnouncement("Continuing", session, launchCwd),
+		}, nil
+	}
+
+	if !resumeSet {
+		return tuiSessionSelection{}, nil
+	}
+
+	if resume == "picker" || resume == "list" || strings.TrimSpace(resume) == "" {
+		sessions, err := historyMgr.ListSessions(0)
+		if err != nil {
+			return tuiSessionSelection{}, fmt.Errorf("failed to list sessions: %w", err)
+		}
+		if len(sessions) == 0 {
+			return tuiSessionSelection{announcement: "No previous conversations found. Starting a new conversation."}, nil
+		}
+
+		picker := tui.NewSessionPicker(sessions)
+		p := tea.NewProgram(picker)
+		pickerModel, err := p.Run()
+		if err != nil {
+			return tuiSessionSelection{}, fmt.Errorf("failed to run session picker: %w", err)
+		}
+
+		pickerResult, ok := pickerModel.(*tui.SessionPicker)
+		if !ok {
+			return tuiSessionSelection{}, fmt.Errorf("failed to decode session picker result")
+		}
+		if verbose {
+			fmt.Printf("Picker selected session ID: %q\n", pickerResult.SelectedSessionID)
+		}
+		if strings.TrimSpace(pickerResult.SelectedSessionID) == "" {
+			return tuiSessionSelection{announcement: "Resume cancelled. Starting a new conversation."}, nil
+		}
+
+		session, err := historyMgr.LoadSession(pickerResult.SelectedSessionID)
+		if err != nil {
+			return tuiSessionSelection{}, fmt.Errorf("failed to load session: %w", err)
+		}
+		return tuiSessionSelection{
+			session:      session,
+			restore:      true,
+			announcement: formatSessionAnnouncement("Resuming", session, launchCwd),
+		}, nil
+	}
+
+	session, err := historyMgr.LoadSession(strings.TrimSpace(resume))
+	if err != nil {
+		return tuiSessionSelection{}, fmt.Errorf("failed to load session %s: %w", resume, err)
+	}
+
+	return tuiSessionSelection{
+		session:      session,
+		restore:      true,
+		announcement: formatSessionAnnouncement("Resuming", session, launchCwd),
+	}, nil
+}
+
+func activateSessionWorkspace(session *history.Session) error {
+	if session == nil || strings.TrimSpace(session.Path) == "" {
+		return nil
+	}
+
+	target, err := filepath.Abs(session.Path)
+	if err != nil {
+		return fmt.Errorf("failed to resolve session workspace %q: %w", session.Path, err)
+	}
+	if err := os.Chdir(target); err != nil {
+		return fmt.Errorf("failed to enter session workspace %q: %w", target, err)
+	}
+
+	session.Path = target
+	return nil
+}
+
+func formatSessionAnnouncement(action string, session *history.Session, launchCwd string) string {
+	if session == nil {
+		return ""
+	}
+
+	msg := fmt.Sprintf("%s session %s from %s.", action, session.ID, session.UpdatedAt.Format("Jan 02 15:04"))
+	if strings.TrimSpace(session.Path) == "" {
+		return msg
+	}
+	if samePath(launchCwd, session.Path) {
+		return fmt.Sprintf("%s Workspace: %s.", msg, session.Path)
+	}
+	return fmt.Sprintf("%s Switching workspace to %s.", msg, session.Path)
+}
+
+func samePath(a, b string) bool {
+	if strings.TrimSpace(a) == "" || strings.TrimSpace(b) == "" {
+		return false
+	}
+	return filepath.Clean(a) == filepath.Clean(b)
+}
+
+func printSessionResumeFooter(session *history.Session, startedAt time.Time) {
+	if session == nil || strings.TrimSpace(session.ID) == "" {
+		return
+	}
+
+	fmt.Println()
+	fmt.Printf("Session saved: %s\n", session.ID)
+	if strings.TrimSpace(session.Path) != "" {
+		fmt.Printf("Workspace: %s\n", session.Path)
+	}
+	fmt.Printf("To resume this session, run simple-agent --resume %s\n", session.ID)
+	fmt.Println("To browse recent sessions, run simple-agent --resume")
+	fmt.Println("To continue your latest session, run simple-agent --continue")
+	fmt.Printf("Execution time: %.2fs\n", time.Since(startedAt).Seconds())
+}
+
+func normalizeResumeArgs(args []string) []string {
+	out := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		if (arg == "--resume" || arg == "-r") && i+1 < len(args) && !strings.HasPrefix(args[i+1], "-") {
+			out = append(out, arg+"="+args[i+1])
+			i++
+			continue
+		}
+		out = append(out, arg)
+	}
+	return out
 }
 
 func runQuery(cmd *cobra.Command, args []string) error {
