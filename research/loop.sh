@@ -187,6 +187,19 @@ restore_paths() {
   git clean -fd -- "$@" >/dev/null 2>&1 || true
 }
 
+restore_candidate() {
+  local diff_path="$1"
+  local source_commit="$2"
+  shift 2
+  if [[ -f "$diff_path" && -s "$diff_path" ]]; then
+    if git apply -R --whitespace=nowarn "$diff_path" >/dev/null 2>&1; then
+      git reset --quiet
+      return
+    fi
+  fi
+  restore_paths "$source_commit" "$@"
+}
+
 json_field() {
   python3 - "$1" "$2" <<'PY'
 import json
@@ -229,6 +242,8 @@ write_attempt_prompt() {
     fi
     if [[ -n "$CASE_JSON" ]]; then
       echo "- Imported case: $(case_json_field title)"
+      echo "- Imported case directory: $(dirname "$CASE_JSON")"
+      echo "- Note: case artifacts live under an ignored path, so read them by explicit path instead of relying on default file discovery."
     fi
     echo
     echo "Current best score snapshot:"
@@ -310,7 +325,7 @@ for (( attempt=1; attempt<=ATTEMPTS; attempt++ )); do
   if [[ "$codex_exit" -ne 0 ]]; then
     if [[ "${#changed_files[@]}" -gt 0 ]]; then
       git diff --binary >"$run_dir/rejected.diff" || true
-      restore_paths "$best_commit" "${changed_files[@]}"
+      restore_candidate "$run_dir/rejected.diff" "$best_commit" "${changed_files[@]}"
     fi
     append_result "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$attempt" "$(git rev-parse --short "$best_commit")" "crash" "0" "0" "0" "" "codex exec failed"
     continue
@@ -330,7 +345,7 @@ for (( attempt=1; attempt<=ATTEMPTS; attempt++ )); do
 
   if [[ "${#disallowed[@]}" -gt 0 ]]; then
     git diff --binary >"$run_dir/rejected.diff" || true
-    restore_paths "$best_commit" "${changed_files[@]}"
+    restore_candidate "$run_dir/rejected.diff" "$best_commit" "${changed_files[@]}"
     append_result "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$attempt" "$(git rev-parse --short "$best_commit")" "rejected" "0" "0" "0" "" "disallowed paths: ${disallowed[*]}"
     continue
   fi
@@ -366,7 +381,7 @@ for (( attempt=1; attempt<=ATTEMPTS; attempt++ )); do
       "$(json_field "$candidate_score_path" extra_score)" \
       "$summary_line"
   else
-    restore_paths "$best_commit" "${changed_files[@]}"
+    restore_candidate "$run_dir/candidate.diff" "$best_commit" "${changed_files[@]}"
     append_result \
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
       "$attempt" \

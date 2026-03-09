@@ -271,29 +271,32 @@ func runCommand(workdir, name string, argv ...string) CheckResult {
 }
 
 func changedGoPackages(repoRoot string) []string {
-	cmd := exec.Command("git", "status", "--porcelain")
-	cmd.Dir = repoRoot
-	out, err := cmd.Output()
-	if err != nil {
-		return nil
+	packages := map[string]struct{}{}
+
+	collect := func(args ...string) {
+		cmd := exec.Command("git", args...)
+		cmd.Dir = repoRoot
+		out, err := cmd.Output()
+		if err != nil {
+			return
+		}
+		lines := strings.Split(strings.TrimSpace(string(out)), "\n")
+		for _, line := range lines {
+			path := strings.TrimSpace(line)
+			if path == "" || !strings.HasSuffix(path, ".go") {
+				continue
+			}
+			dir := filepath.Dir(path)
+			if dir == "." {
+				continue
+			}
+			packages["./"+dir] = struct{}{}
+		}
 	}
 
-	lines := strings.Split(strings.TrimSpace(string(out)), "\n")
-	packages := map[string]struct{}{}
-	for _, line := range lines {
-		if strings.TrimSpace(line) == "" || len(line) < 4 {
-			continue
-		}
-		path := strings.TrimSpace(line[3:])
-		if !strings.HasSuffix(path, ".go") {
-			continue
-		}
-		dir := filepath.Dir(path)
-		if dir == "." {
-			continue
-		}
-		packages["./"+dir] = struct{}{}
-	}
+	collect("diff", "--name-only", "--", "*.go")
+	collect("diff", "--cached", "--name-only", "--", "*.go")
+	collect("ls-files", "--others", "--exclude-standard", "--", "*.go")
 
 	if len(packages) == 0 {
 		return nil
