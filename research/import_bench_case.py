@@ -1,12 +1,10 @@
 #!/usr/bin/env python3
 import argparse
 import json
+import os
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-
-
-DEFAULT_BENCH_ROOT = Path("/Users/ia/code/experiments/llm-agentic-bench")
 DEFAULT_EXTRA_ALLOWED = [
     "agent/",
     "cmd/",
@@ -106,13 +104,18 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Import a benchmark failure into a local research case pack.")
     parser.add_argument("artifact_dir", help="Path to benchmark failure artifact directory")
     parser.add_argument("--passing-result", help="Optional passing comparison result JSON (for example pi)")
-    parser.add_argument("--bench-root", default=str(DEFAULT_BENCH_ROOT), help="Benchmark repo root")
+    parser.add_argument("--bench-root", help="Benchmark repo root (defaults to inferring from artifact_dir or $LLM_AGENTIC_BENCH_ROOT)")
     parser.add_argument("--out-dir", help="Destination case directory (defaults under research/cases/)")
     args = parser.parse_args()
 
     root = Path(__file__).resolve().parent.parent
     artifact_dir = Path(args.artifact_dir).resolve()
-    bench_root = Path(args.bench_root).resolve()
+    if args.bench_root:
+        bench_root = Path(args.bench_root).resolve()
+    elif os.environ.get("LLM_AGENTIC_BENCH_ROOT"):
+        bench_root = Path(os.environ["LLM_AGENTIC_BENCH_ROOT"]).resolve()
+    else:
+        bench_root = artifact_dir.parent.parent
 
     artifact_json = artifact_dir / "artifact.json"
     workspace_dir = artifact_dir / "workspace"
@@ -120,6 +123,8 @@ def main() -> int:
         raise SystemExit(f"Missing artifact.json in {artifact_dir}")
     if not workspace_dir.exists():
         raise SystemExit(f"Missing workspace/ in {artifact_dir}")
+    if not (bench_root / "bench.py").exists():
+        raise SystemExit(f"Could not resolve benchmark repo root from {bench_root}; pass --bench-root explicitly")
 
     failure = json.loads(artifact_json.read_text())
     passing = None

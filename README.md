@@ -322,8 +322,8 @@ Import a benchmark failure case and run the loop against it:
 
 ```bash
 python3 research/import_bench_case.py \
-  /Users/ia/code/experiments/llm-agentic-bench/failure_artifacts/mac/<artifact-dir> \
-  --passing-result /Users/ia/code/experiments/llm-agentic-bench/results/qwen3.5-9b_pi_person_research.json
+  <bench-root>/failure_artifacts/mac/<artifact-dir> \
+  --passing-result <bench-root>/results/qwen3.5-9b_pi_person_research.json
 
 research/loop.sh --case research/cases/<case-slug> --attempts 2
 ```
