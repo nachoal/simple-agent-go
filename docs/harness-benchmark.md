@@ -44,3 +44,4 @@ The migration improves autonomy more than raw single-command speed:
 - The harness now stores structured local artifacts and compares runs over time.
 - Private session-derived artifacts stay outside the repository by default.
 - There is now a deterministic harness-only fake LLM for no-network PTY smoke and an opt-in live LM Studio canary for real-provider validation.
+- `latest.json` now includes a compact summary block (`passed_checks`, `failed_checks`, `score_pct`, `total_duration_ms`) so repo-local research loops can score attempts mechanically.

@@ -1,6 +1,6 @@
 # Architecture
 
-This repository is split into four surfaces:
+This repository is split into five surfaces:
 
 ## 1. Product Runtime
 
@@ -42,7 +42,22 @@ Public harness runs should emit the captured output of any failing check directl
 
 This surface is for maintainers only and must not leak transcript-derived artifacts into the repository.
 
-## 4. Documentation System Of Record
+The private harness manifest now includes a compact `summary` block so local research tooling can compare attempts without scraping human-readable console text.
+
+## 4. Local Research Controller
+
+- `research/program.md`
+- `research/allowed_paths.txt`
+- `research/import_bench_case.py`
+- `research/run_bench_case.py`
+- `research/evaluate.sh`
+- `research/score.py`
+- `research/loop.sh`
+- ignored local artifacts under `research/runs/`, `research/results.tsv`, and `research/cases/`
+
+This surface is a repo-local optimize/evaluate loop for Codex-driven improvement work. It may read sanitized harness manifests and write local diffs, scores, and controller logs, but it must not copy transcript-derived Codex-analysis artifacts out of `~/.simple-agent/harness/...`.
+
+## 5. Documentation System Of Record
 
 - `AGENTS.md`
 - `docs/AGENTS.md`

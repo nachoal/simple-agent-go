@@ -18,6 +18,7 @@ This file applies when editing anything under `docs/` or public-facing maintaine
   - `./simple-agent --help`
   - `.github/workflows/ci.yml`
 - Private transcript analysis must be documented as local-only and outside the repo by default.
+- Repo-local ignored research artifacts under `research/` may be documented as local-only maintainer workflow surfaces, including imported benchmark case packs, but they must remain sanitized and must not embed private transcript-derived outputs from `~/.simple-agent/harness/...`.
 - If defaults change, update the exact command examples and exact output location.
 
 ## 3. Required Sync Points

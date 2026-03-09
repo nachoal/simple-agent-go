@@ -24,6 +24,9 @@ Runtime guarantees:
 - `~/.simple-agent/harness/<repo-slug>/latest.json`
 - `~/.simple-agent/harness/<repo-slug>/runs/**/*.jsonl`
 - `~/.simple-agent/harness/<repo-slug>/codex-analysis/`
+- ignored local research artifacts under `research/results.tsv`
+- ignored local research attempt directories under `research/runs/`
+- ignored imported benchmark case packs under `research/cases/`
 
 Conversation sessions are persisted immediately on creation so even an otherwise empty TUI session can be resumed later by session ID.
 
@@ -48,3 +51,4 @@ The goal is application legibility:
 - agents should be able to inspect known model inventory
 - agents should be able to inspect local harness state
 - agents should be able to reason about whether a previous run finished, failed, or was interrupted
+- local research tooling should be able to compare harness summaries without copying private transcript analysis into the repository

@@ -298,6 +298,43 @@ Related docs:
 - `docs/runtime-state.md`
 - `docs/AGENTS.md`
 
+### Codex Research Loop
+
+This repo also includes a local-only research layer for Codex-driven optimize/evaluate loops against `simple-agent-go`.
+
+Files:
+
+- `research/program.md`
+- `research/allowed_paths.txt`
+- `research/import_bench_case.py`
+- `research/run_bench_case.py`
+- `research/evaluate.sh`
+- `research/score.py`
+- `research/loop.sh`
+
+Example:
+
+```bash
+research/loop.sh --attempts 3 --eval-mode both
+```
+
+Import a benchmark failure case and run the loop against it:
+
+```bash
+python3 research/import_bench_case.py \
+  /Users/ia/code/experiments/llm-agentic-bench/failure_artifacts/mac/<artifact-dir> \
+  --passing-result /Users/ia/code/experiments/llm-agentic-bench/results/qwen3.5-9b_pi_person_research.json
+
+research/loop.sh --case research/cases/<case-slug> --attempts 2
+```
+
+Notes:
+
+- Codex CLI is the research agent; `simple-agent-go` is the artifact being optimized.
+- `research/results.tsv` and `research/runs/` are ignored local artifacts and are not intended for commits.
+- Imported benchmark cases live under ignored `research/cases/`.
+- Private transcript-derived artifacts still live only under `~/.simple-agent/harness/<repo-slug>/`.
+
 ### As a Library
 
 ```go

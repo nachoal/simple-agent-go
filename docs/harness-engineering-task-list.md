@@ -50,6 +50,13 @@ This repo now follows a harness-oriented split: public OSS code and CI stay in t
 - `~/.simple-agent/harness/<repo-slug>/latest.json`
 - `~/.simple-agent/harness/<repo-slug>/codex-analysis/`
 - `~/.simple-agent/harness/<repo-slug>/runs/**/*.jsonl`
+- `research/program.md`
+- `research/import_bench_case.py`
+- `research/run_bench_case.py`
+- `research/evaluate.sh`
+- `research/score.py`
+- `research/loop.sh`
+- ignored local ledgers under `research/results.tsv`, `research/runs/`, and `research/cases/`
 
 ## Sanitized Scenario Families
 
@@ -67,3 +74,4 @@ These are the public scenario families the harness is meant to cover without lea
 
 - Add richer PTY fixtures for session picker navigation and bare `--resume` picker flows.
 - Add a dedicated harness report viewer that summarizes regressions from `latest.json` without reading raw JSON.
+- Add an optional benchmark hook from `research/evaluate.sh` into external agent benchmarks once the local harness objective is stable.

@@ -42,6 +42,9 @@ coverage.out
 # Local config
 .simple-agent/
 analysis/codex/
+research/results.tsv
+research/runs/
+research/cases/
 
 # Crush directory
 .crush/

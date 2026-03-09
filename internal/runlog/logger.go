@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,6 +33,21 @@ type Metadata struct {
 }
 
 func New(repoRoot, prefix string) (*Logger, error) {
+	if override := strings.TrimSpace(os.Getenv("SIMPLE_AGENT_RUNLOG_PATH")); override != "" {
+		path := override
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(repoRoot, path)
+		}
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return nil, fmt.Errorf("failed to create run log directory %q: %w", filepath.Dir(path), err)
+		}
+		file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+		if err != nil {
+			return nil, fmt.Errorf("failed to open run log %q: %w", path, err)
+		}
+		return &Logger{path: path, file: file}, nil
+	}
+
 	harnessDir, err := userpaths.HarnessDir(repoRoot)
 	if err != nil {
 		return nil, err

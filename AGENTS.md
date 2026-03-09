@@ -7,6 +7,7 @@ This file defines mandatory execution hygiene for code changes in this repositor
 - Treat this repository as public OSS.
 - Do not commit or leave behind transcript-derived artifacts from local Codex or Claude sessions.
 - Private harness outputs must stay under `~/.simple-agent/harness/...`, not under the repo.
+- Repo-local ignored research artifacts may live under `research/runs/`, `research/results.tsv`, and `research/cases/`, but they must only contain sanitized harness summaries, diffs, benchmark case packs, and controller logs. Do not copy transcript-derived `codex-analysis` artifacts into the repository.
 - Public docs may describe scenario families, failure classes, and harness workflows, but must not expose raw private session transcripts, prompts, or internal issue narratives.
 
 ## 2. No Stale Artifact Assumptions

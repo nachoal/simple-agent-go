@@ -27,6 +27,11 @@ The PTY smoke now covers:
 - private harness manifest written to `~/.simple-agent/harness/<repo-slug>/latest.json`
 - structured JSONL run logs written to `~/.simple-agent/harness/<repo-slug>/runs/**/*.jsonl`
 - optional live LM Studio canary when `SIMPLE_AGENT_ENABLE_LIVE_CANARIES=1`
+- `research/evaluate.sh --mode both`
+- `research/score.py <evaluation.json>`
+- `research/import_bench_case.py <artifact-dir> --passing-result <result.json>`
+- `research/run_bench_case.py <case.json>`
+- `research/loop.sh --attempts <N>`
 
 ## Fast Path
 
@@ -51,3 +56,10 @@ Use this when you want the full local maintainer harness, including private tran
 
 - `SIMPLE_AGENT_ENABLE_LIVE_CANARIES=1 go run ./scripts/run_harness --mode private`
 - optional model override: `LM_STUDIO_CANARY_MODEL=<model-id>`
+
+## Research Loop
+
+- `research/loop.sh` uses Codex CLI as the outer research agent.
+- Imported benchmark cases under ignored `research/cases/` can add scenario-specific prompt context and a targeted rerun objective.
+- The loop mutates only allowlisted paths from `research/allowed_paths.txt`.
+- Accepted and discarded attempt summaries are logged locally under ignored `research/` artifacts, while transcript-derived Codex analysis remains under `~/.simple-agent/harness/...`.

@@ -22,14 +22,25 @@ const (
 )
 
 type HarnessResult struct {
-	GeneratedAt        time.Time     `json:"generated_at"`
-	RepoRoot           string        `json:"repo_root"`
-	HarnessDir         string        `json:"harness_dir"`
-	Mode               string        `json:"mode"`
-	CodexAnalysisDir   string        `json:"codex_analysis_dir,omitempty"`
-	Checks             []CheckResult `json:"checks"`
-	PrivateAnalysisRun bool          `json:"private_analysis_run"`
-	Comparison         *Comparison   `json:"comparison,omitempty"`
+	GeneratedAt        time.Time      `json:"generated_at"`
+	RepoRoot           string         `json:"repo_root"`
+	HarnessDir         string         `json:"harness_dir"`
+	Mode               string         `json:"mode"`
+	Summary            HarnessSummary `json:"summary"`
+	CodexAnalysisDir   string         `json:"codex_analysis_dir,omitempty"`
+	Checks             []CheckResult  `json:"checks"`
+	PrivateAnalysisRun bool           `json:"private_analysis_run"`
+	Comparison         *Comparison    `json:"comparison,omitempty"`
+}
+
+type HarnessSummary struct {
+	Status           string   `json:"status"`
+	TotalChecks      int      `json:"total_checks"`
+	PassedChecks     int      `json:"passed_checks"`
+	FailedChecks     int      `json:"failed_checks"`
+	ScorePct         float64  `json:"score_pct"`
+	TotalDurationMS  int64    `json:"total_duration_ms"`
+	FailedCheckNames []string `json:"failed_check_names,omitempty"`
 }
 
 type CheckResult struct {
@@ -85,6 +96,7 @@ func main() {
 		res := runCommand(repoRoot, check.name, check.cmd...)
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
+			result.Summary = summarizeChecks(result.Checks)
 			_ = writeHarnessResult(result)
 			reportFailedCheck(res)
 			fail(fmt.Errorf("%s failed", check.name))
@@ -101,6 +113,7 @@ func main() {
 		)
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
+			result.Summary = summarizeChecks(result.Checks)
 			_ = writeHarnessResult(result)
 			reportFailedCheck(res)
 			fail(fmt.Errorf("private codex analysis failed"))
@@ -118,18 +131,27 @@ func main() {
 		res := runCommand(repoRoot, "live-lmstudio-canary", canaryArgs...)
 		result.Checks = append(result.Checks, res)
 		if res.Status != "passed" {
+			result.Summary = summarizeChecks(result.Checks)
 			_ = writeHarnessResult(result)
 			reportFailedCheck(res)
 			fail(fmt.Errorf("live lmstudio canary failed"))
 		}
 	}
 
+	result.Summary = summarizeChecks(result.Checks)
 	if err := writeHarnessResult(result); err != nil {
 		fail(err)
 	}
 
 	fmt.Printf("Harness complete for %s\n", repoRoot)
 	fmt.Printf("Local harness dir: %s\n", harnessDir)
+	fmt.Printf("Summary: %s (%d/%d checks, %.1f%%, %dms)\n",
+		result.Summary.Status,
+		result.Summary.PassedChecks,
+		result.Summary.TotalChecks,
+		result.Summary.ScorePct,
+		result.Summary.TotalDurationMS,
+	)
 	if result.CodexAnalysisDir != "" {
 		fmt.Printf("Private Codex analysis: %s\n", result.CodexAnalysisDir)
 	}
@@ -164,6 +186,33 @@ func buildChecks(repoRoot, mode string) []harnessCheck {
 		{name: "public-evals", cmd: []string{"sh", "-c", "SIMPLE_AGENT_BINARY=./simple-agent go run ./scripts/run_public_evals --json --fixtures " + fixturesPath}},
 		{name: "smoke-help", cmd: []string{"./simple-agent", "--help"}},
 	}
+}
+
+func summarizeChecks(checks []CheckResult) HarnessSummary {
+	summary := HarnessSummary{
+		Status:           "passed",
+		TotalChecks:      len(checks),
+		FailedCheckNames: []string{},
+	}
+
+	for _, check := range checks {
+		summary.TotalDurationMS += check.DurationMS
+		if check.Status == "passed" {
+			summary.PassedChecks++
+			continue
+		}
+		summary.FailedChecks++
+		summary.FailedCheckNames = append(summary.FailedCheckNames, check.Name)
+	}
+
+	if summary.TotalChecks > 0 {
+		summary.ScorePct = float64(summary.PassedChecks) / float64(summary.TotalChecks) * 100
+	}
+	if summary.FailedChecks > 0 {
+		summary.Status = "failed"
+	}
+
+	return summary
 }
 
 func liveCanariesEnabled() bool {
