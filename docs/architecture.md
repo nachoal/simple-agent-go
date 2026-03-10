@@ -19,6 +19,7 @@ Operational notes:
 - The agent applies a per-request LLM timeout from runtime config/CLI (`--timeout`) instead of relying on provider defaults.
 - File mutation/read tools are workspace-scoped to the current working directory so repo-local runs do not escape into unrelated paths.
 - Session resume/continue lives in the product runtime, with persisted sessions under `~/.simple-agent/sessions/`; resuming a session re-enters the saved workspace before the TUI starts.
+- The bordered TUI now owns the visible transcript as viewport state instead of printing completed turns above the app, so historical messages and streamed assistant output can be reflowed and rerendered correctly on terminal resize.
 
 ## 2. Public OSS Harness
 

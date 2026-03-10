@@ -17,6 +17,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
@@ -38,6 +39,21 @@ type systemPromptBuilder func() string
 type runtimeReloader func() error
 type staticModelsProvider func() map[string][]llm.Model
 
+type transcriptEntryKind string
+
+const (
+	transcriptUser      transcriptEntryKind = "user"
+	transcriptAssistant transcriptEntryKind = "assistant"
+	transcriptCommand   transcriptEntryKind = "command"
+	transcriptError     transcriptEntryKind = "error"
+	transcriptTool      transcriptEntryKind = "tool"
+)
+
+type transcriptEntry struct {
+	kind    transcriptEntryKind
+	content string
+}
+
 // BorderedTUI is a minimal TUI that matches the Python bordered_interface.py
 type BorderedTUI struct {
 	agent            agent.Agent
@@ -45,6 +61,8 @@ type BorderedTUI struct {
 	provider         string
 	model            string
 	textarea         textarea.Model
+	transcriptView   viewport.Model
+	transcript       []transcriptEntry
 	historyForAgent  []llm.Message // Keep history only for agent context, not UI
 	width            int
 	height           int
@@ -56,9 +74,10 @@ type BorderedTUI struct {
 	yoloEnabled      bool
 
 	// Providers for model selection
-	providers     map[string]llm.Client
-	configManager *config.Manager
-	clientFactory providerClientFactory
+	providers       map[string]llm.Client
+	configManager   *config.Manager
+	clientFactory   providerClientFactory
+	configuredTools []string
 
 	// Runtime resource/model refresh hooks.
 	systemPromptBuilder systemPromptBuilder
@@ -66,7 +85,8 @@ type BorderedTUI struct {
 	staticModelsLoader  staticModelsProvider
 
 	// Glamour renderer
-	renderer *glamour.TermRenderer
+	renderer      *glamour.TermRenderer
+	rendererWidth int
 
 	// Spinner for thinking state
 	spinner spinner.Model
@@ -193,7 +213,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	ta := textarea.New()
 	ta.Placeholder = ""
 	ta.ShowLineNumbers = false
-	ta.Prompt = "" // Remove the prompt since we'll handle it in the border
+	ta.Prompt = "> "
 	ta.CharLimit = 0
 	ta.SetHeight(1) // Start with single line
 	ta.Focus()
@@ -245,6 +265,8 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		BorderForeground(borderColor)
 
 	tokenRe := regexp.MustCompile(`\[Image\s+#(\d+)\]`)
+	transcriptView := viewport.New(80, 12)
+	transcriptView.Style = lipgloss.NewStyle()
 
 	tui := &BorderedTUI{
 		agent:                agentInstance,
@@ -252,8 +274,11 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 		provider:             provider,
 		model:                model,
 		textarea:             ta,
+		transcriptView:       transcriptView,
+		transcript:           []transcriptEntry{},
 		historyForAgent:      []llm.Message{},
 		width:                80, // Default terminal width
+		height:               24,
 		initialized:          false,
 		renderer:             renderer,
 		spinner:              s,
@@ -305,6 +330,7 @@ func NewBorderedTUI(llmClient llm.Client, agentInstance agent.Agent, provider, m
 	tui.supportsVision = tui.computeVisionSupport()
 	tui.applyModelDefaults()
 	tui.initTraceLogger()
+	tui.syncLayout(true)
 
 	return tui
 }
@@ -323,7 +349,7 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 	tui.providers = providers
 	tui.configManager = configManager
 
-	// Print history immediately before TUI starts
+	// Seed transcript and agent-context history from any resumed session.
 	if historyAgent != nil {
 		session := historyAgent.GetSession()
 		if session != nil {
@@ -335,7 +361,6 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 				fmt.Fprintf(os.Stderr, "[TUI] Found %d messages in session %s\n", len(session.Messages), session.ID)
 			}
 
-			// Print history messages to stdout
 			for _, msg := range session.Messages {
 				// Skip system messages
 				if msg.Role == "system" {
@@ -359,18 +384,17 @@ func NewBorderedTUIWithHistory(llmClient llm.Client, historyAgent *agent.History
 					Content: &content,
 				})
 
-				// Print to stdout
 				switch msg.Role {
 				case "user":
-					fmt.Println(renderUserMessage(content))
+					tui.transcript = append(tui.transcript, transcriptEntry{kind: transcriptUser, content: content})
 				case "assistant":
-					fmt.Println(renderAssistantMessage(tui.renderer, content))
+					tui.transcript = append(tui.transcript, transcriptEntry{kind: transcriptAssistant, content: content})
 				}
-				fmt.Println() // Empty line between messages
 			}
 		}
 	}
 
+	tui.syncLayout(true)
 	return tui
 }
 
@@ -394,6 +418,16 @@ func (m *BorderedTUI) SetStaticModelsLoader(loader func() map[string][]llm.Model
 	m.staticModelsLoader = loader
 }
 
+// SetConfiguredTools provides the enabled tool set for the in-app header.
+func (m *BorderedTUI) SetConfiguredTools(configuredTools []string) {
+	if configuredTools == nil {
+		m.configuredTools = nil
+	} else {
+		m.configuredTools = append([]string(nil), configuredTools...)
+	}
+	m.syncLayout(false)
+}
+
 // Attachment represents a user-attached image reference
 type Attachment struct {
 	ID        int
@@ -407,52 +441,208 @@ type commandEntry struct {
 	desc string
 }
 
-// Helper functions for rendering messages to stdout with styling
-func renderUserMessage(content string) string {
-	style := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
-	return fmt.Sprintf("👤 You: %s", style.Render(content))
+func (m *BorderedTUI) syncLayout(pinBottom bool) {
+	if m.width <= 0 {
+		m.width = 80
+	}
+	if m.height <= 0 {
+		m.height = 24
+	}
+
+	m.borderStyle = m.borderStyle.Width(m.inputOuterWidth())
+	m.textarea.SetWidth(m.inputInnerWidth())
+	m.adjustTextareaHeight()
+
+	m.ensureRenderer()
+	m.transcriptView.Width = m.transcriptWrapWidth()
+	m.transcriptView.Height = m.transcriptHeight()
+	m.refreshTranscriptView(pinBottom)
+	m.initialized = true
 }
 
-func renderAssistantMessage(renderer *glamour.TermRenderer, content string) string {
+func (m *BorderedTUI) ensureRenderer() {
+	wrapWidth := m.transcriptWrapWidth()
+	if m.renderer != nil && m.rendererWidth == wrapWidth {
+		return
+	}
+	renderer, err := glamour.NewTermRenderer(
+		glamour.WithStandardStyle("notty"),
+		glamour.WithWordWrap(wrapWidth),
+	)
+	if err == nil {
+		m.renderer = renderer
+		m.rendererWidth = wrapWidth
+	}
+}
+
+func (m BorderedTUI) inputOuterWidth() int {
+	width := m.width - 2
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func (m BorderedTUI) inputInnerWidth() int {
+	width := m.inputOuterWidth() - m.borderStyle.GetHorizontalFrameSize()
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func (m BorderedTUI) transcriptWrapWidth() int {
+	width := m.width - 1
+	if width < 1 {
+		return 1
+	}
+	return width
+}
+
+func (m BorderedTUI) suggestionLineCount() int {
+	if !m.suggestVisible || len(m.suggestItems) == 0 {
+		return 0
+	}
+	count := len(m.suggestItems)
+	if count > 8 {
+		count = 8
+	}
+	if len(m.suggestItems) > count {
+		count++
+	}
+	return count
+}
+
+func (m BorderedTUI) transcriptHeight() int {
+	headerLines := 3 // two header lines plus one spacer line
+	metaLines := 1
+	if m.transientNotice != "" {
+		metaLines++
+	}
+	inputLines := m.textarea.Height() + m.borderStyle.GetVerticalFrameSize()
+	suggestionLines := m.suggestionLineCount()
+
+	height := m.height - headerLines - metaLines - inputLines - suggestionLines
+	if height < 1 {
+		return 1
+	}
+	return height
+}
+
+func (m *BorderedTUI) refreshTranscriptView(pinBottom bool) {
+	wasAtBottom := m.transcriptView.AtBottom()
+	oldYOffset := m.transcriptView.YOffset
+	m.transcriptView.SetContent(m.renderTranscriptContent())
+	if pinBottom || wasAtBottom || m.isThinking || m.streamingMessage != nil {
+		m.transcriptView.GotoBottom()
+		return
+	}
+
+	maxOffset := m.transcriptView.TotalLineCount() - m.transcriptView.Height
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if oldYOffset > maxOffset {
+		oldYOffset = maxOffset
+	}
+	m.transcriptView.SetYOffset(oldYOffset)
+}
+
+func (m *BorderedTUI) appendTranscript(kind transcriptEntryKind, content string) {
+	if strings.TrimSpace(content) == "" {
+		return
+	}
+	m.transcript = append(m.transcript, transcriptEntry{kind: kind, content: content})
+	m.refreshTranscriptView(true)
+}
+
+func (m BorderedTUI) renderTranscriptContent() string {
+	sections := make([]string, 0, len(m.transcript)+2)
+	wrapWidth := m.transcriptWrapWidth()
+	for _, entry := range m.transcript {
+		rendered := renderTranscriptEntry(entry, m.renderer, wrapWidth)
+		if strings.TrimSpace(rendered) != "" {
+			sections = append(sections, rendered)
+		}
+	}
+
+	if m.streamingMessage != nil {
+		streamContent := streamMessageToContent(m.streamingMessage)
+		if strings.TrimSpace(streamContent) != "" {
+			sections = append(sections, renderAssistantMessage(m.renderer, streamContent, wrapWidth))
+		}
+	}
+
+	if m.isThinking && m.streamingMessage == nil {
+		status := renderToolMessage(fmt.Sprintf("%s Thinking...", m.spinner.View()), wrapWidth)
+		if strings.TrimSpace(status) != "" {
+			sections = append(sections, status)
+		}
+	}
+
+	return strings.Join(sections, "\n\n")
+}
+
+func renderTranscriptEntry(entry transcriptEntry, renderer *glamour.TermRenderer, wrapWidth int) string {
+	switch entry.kind {
+	case transcriptUser:
+		return renderUserMessage(entry.content, wrapWidth)
+	case transcriptAssistant:
+		return renderAssistantMessage(renderer, entry.content, wrapWidth)
+	case transcriptError:
+		return renderErrorMessage(entry.content, wrapWidth)
+	case transcriptTool:
+		return renderToolMessage(entry.content, wrapWidth)
+	case transcriptCommand:
+		fallthrough
+	default:
+		return renderCommandMessage(entry.content, wrapWidth)
+	}
+}
+
+func renderUserMessage(content string, wrapWidth int) string {
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	bodyStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15"))
+	return fmt.Sprintf("%s\n%s", labelStyle.Render("👤 You:"), styleWrappedText(bodyStyle, content, wrapWidth))
+}
+
+func renderAssistantMessage(renderer *glamour.TermRenderer, content string, wrapWidth int) string {
+	labelStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
 	thinkingTrace, finalContent := splitThinkingTrace(content)
+	sections := []string{labelStyle.Render("🤖 Assistant:")}
 
 	if thinkingTrace != "" {
 		tagStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244")).Bold(true)
 		traceStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
-		wrappedTrace := wrapThinkingTrace(thinkingTrace)
+		wrappedTrace := wrapThinkingTrace(thinkingTrace, wrapWidth)
 
 		traceBlock := fmt.Sprintf("%s\n%s\n%s",
 			tagStyle.Render("<thinking traces>"),
-			traceStyle.Render(wrappedTrace),
+			styleMultiline(traceStyle, wrappedTrace),
 			tagStyle.Render("</thinking traces>"),
 		)
+		sections = append(sections, traceBlock)
+	}
 
-		sections := []string{traceBlock}
-
-		if strings.TrimSpace(finalContent) != "" {
-			if renderer != nil {
-				rendered, err := renderer.Render(finalContent)
-				if err == nil {
-					sections = append(sections, strings.TrimRight(rendered, "\n"))
-				} else {
-					sections = append(sections, finalContent)
-				}
+	body := content
+	if thinkingTrace != "" {
+		body = finalContent
+	}
+	body = strings.TrimSpace(body)
+	if body != "" {
+		if renderer != nil {
+			rendered, err := renderer.Render(body)
+			if err == nil {
+				sections = append(sections, strings.TrimRight(rendered, "\n"))
 			} else {
-				sections = append(sections, finalContent)
+				sections = append(sections, styleWrappedText(lipgloss.NewStyle().Foreground(lipgloss.Color("15")), body, wrapWidth))
 			}
-		}
-
-		return fmt.Sprintf("🤖 Assistant:\n%s", strings.Join(sections, "\n\n"))
-	}
-
-	if renderer != nil {
-		rendered, err := renderer.Render(content)
-		if err == nil {
-			return fmt.Sprintf("🤖 Assistant:\n%s", strings.TrimRight(rendered, "\n"))
+		} else {
+			sections = append(sections, styleWrappedText(lipgloss.NewStyle().Foreground(lipgloss.Color("15")), body, wrapWidth))
 		}
 	}
-	// Fallback without glamour
-	return fmt.Sprintf("🤖 Assistant: %s", content)
+
+	return strings.Join(sections, "\n")
 }
 
 func cloneMessageForDisplay(msg *llm.Message) *llm.Message {
@@ -535,7 +725,7 @@ func splitThinkingTrace(content string) (thinkingTrace string, finalContent stri
 	return strings.Join(traces, "\n\n"), remaining
 }
 
-func wrapThinkingTrace(trace string) string {
+func wrapThinkingTrace(trace string, wrapWidth int) string {
 	if strings.TrimSpace(trace) == "" {
 		return ""
 	}
@@ -548,7 +738,7 @@ func wrapThinkingTrace(trace string) string {
 			wrapped = append(wrapped, "")
 			continue
 		}
-		wrapped = append(wrapped, wordwrap.String(line, assistantMessageWrapWidth))
+		wrapped = append(wrapped, wordwrap.String(line, wrapWidth))
 	}
 
 	return strings.Join(wrapped, "\n")
@@ -568,19 +758,54 @@ func truncateToWidth(s string, max int) string {
 	return string(r[:max-1]) + "…"
 }
 
-func renderCommandMessage(content string) string {
+func wrapPlainText(content string, wrapWidth int) string {
+	if strings.TrimSpace(content) == "" {
+		return ""
+	}
+	if wrapWidth < 1 {
+		wrapWidth = 1
+	}
+
+	lines := strings.Split(content, "\n")
+	wrapped := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			wrapped = append(wrapped, "")
+			continue
+		}
+		wrapped = append(wrapped, wordwrap.String(line, wrapWidth))
+	}
+	return strings.Join(wrapped, "\n")
+}
+
+func styleMultiline(style lipgloss.Style, content string) string {
+	if content == "" {
+		return ""
+	}
+	lines := strings.Split(content, "\n")
+	for i, line := range lines {
+		lines[i] = style.Render(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func styleWrappedText(style lipgloss.Style, content string, wrapWidth int) string {
+	return styleMultiline(style, wrapPlainText(content, wrapWidth))
+}
+
+func renderCommandMessage(content string, wrapWidth int) string {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
-	return style.Render(content)
+	return styleWrappedText(style, content, wrapWidth)
 }
 
-func renderErrorMessage(content string) string {
+func renderErrorMessage(content string, wrapWidth int) string {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("196"))
-	return style.Render(fmt.Sprintf("❌ %s", content))
+	return styleWrappedText(style, fmt.Sprintf("❌ %s", content), wrapWidth)
 }
 
-func renderToolMessage(content string) string {
+func renderToolMessage(content string, wrapWidth int) string {
 	style := lipgloss.NewStyle().Foreground(lipgloss.Color("245")).Italic(true)
-	return style.Render(content)
+	return styleWrappedText(style, content, wrapWidth)
 }
 
 func printAboveLine(content string) tea.Cmd {
@@ -589,6 +814,11 @@ func printAboveLine(content string) tea.Cmd {
 
 func printAboveBlock(content string) tea.Cmd {
 	return tea.Printf("%s\n\n", content)
+}
+
+func syncAndReturn(m BorderedTUI, cmd tea.Cmd, pinBottom bool) (tea.Model, tea.Cmd) {
+	m.syncLayout(pinBottom)
+	return m, cmd
 }
 
 func isTraceEnabled() bool {
@@ -789,9 +1019,9 @@ func replayHistory(session *history.Session, renderer *glamour.TermRenderer) tea
 
 			switch msg.Role {
 			case "user":
-				tea.Println(renderUserMessage(content))
+				tea.Println(renderUserMessage(content, assistantMessageWrapWidth))
 			case "assistant":
-				tea.Println(renderAssistantMessage(renderer, content))
+				tea.Println(renderAssistantMessage(renderer, content, assistantMessageWrapWidth))
 			}
 			tea.Println() // Empty line between messages
 		}
@@ -818,6 +1048,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if m.isThinking {
 		m.spinner, cmd = m.spinner.Update(msg)
 		cmds = append(cmds, cmd)
+		m.refreshTranscriptView(true)
 	}
 
 	// If model selector modal is active, route all messages to it,
@@ -842,12 +1073,13 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id == m.transientNoticeID {
 			m.transientNotice = ""
 		}
-		return m, nil
+		return syncAndReturn(m, nil, false)
 
 	case modelSelectedMsg:
 		if err := m.switchModel(msg.provider, msg.model); err != nil {
 			m.textarea.Focus()
-			return m, printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err)))
+			m.appendTranscript(transcriptError, fmt.Sprintf("Failed to switch model: %v", err))
+			return syncAndReturn(m, nil, true)
 		}
 		m.supportsVision = m.computeVisionSupport()
 		m.applyModelDefaults()
@@ -857,31 +1089,18 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.dataURLSeen = make(map[string]struct{})
 		}
 
-		// Print model switch message
 		m.textarea.Focus()
-		return m, printAboveBlock(renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model)))
+		m.appendTranscript(transcriptCommand, fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))
+		return syncAndReturn(m, nil, true)
 
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		return syncAndReturn(m, nil, true)
 
-		// Update textarea width to match terminal minus borders and padding
-		// The -6 accounts for: border (2) + padding (2) + some margin (2)
-		textareaWidth := m.width - 6
-		if textareaWidth < 1 {
-			textareaWidth = 1
-		}
-		m.textarea.SetWidth(textareaWidth)
-
-		// Update border style width
-		m.borderStyle = m.borderStyle.Width(m.width - 2)
-
-		// Adjust height based on content
-		m.adjustTextareaHeight()
-
-		// Mark as initialized but don't clear screen for native scrollback
-		m.initialized = true
-		return m, nil
+	case tea.MouseMsg:
+		m.transcriptView, cmd = m.transcriptView.Update(msg)
+		return syncAndReturn(m, cmd, false)
 
 	case tea.KeyMsg:
 		switch msg.Type {
@@ -902,14 +1121,22 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.resetToolTrackingForNextQuery()
 					m.clearActiveRun()
 					m.textarea.Focus()
-					return m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?")
+					return syncAndReturn(m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?"), true)
 				}
-				return m, nil
+				return syncAndReturn(m, nil, false)
 			}
 			m.tracef("app_quit key=esc")
 			m.closeTraceLogger()
 			m.closeRunLogger()
 			return m, tea.Quit
+
+		case tea.KeyPgUp:
+			m.transcriptView.HalfPageUp()
+			return syncAndReturn(m, nil, false)
+
+		case tea.KeyPgDown:
+			m.transcriptView.HalfPageDown()
+			return syncAndReturn(m, nil, false)
 
 		case tea.KeyUp:
 			if m.suggestVisible && len(m.suggestItems) > 0 {
@@ -918,13 +1145,13 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				} else {
 					m.suggestIndex = len(m.suggestItems) - 1
 				}
-				return m, nil
+				return syncAndReturn(m, nil, false)
 			}
 
 		case tea.KeyDown:
 			if m.suggestVisible && len(m.suggestItems) > 0 {
 				m.suggestIndex = (m.suggestIndex + 1) % len(m.suggestItems)
-				return m, nil
+				return syncAndReturn(m, nil, false)
 			}
 
 		case tea.KeyTab:
@@ -943,15 +1170,17 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.suggestItems = nil
 					m.suggestIndex = 0
 					m.adjustTextareaHeight()
-					return m, nil
+					return syncAndReturn(m, nil, false)
 				}
 			}
 
 		case tea.KeyCtrlL:
 			// Clear history for agent context
 			m.historyForAgent = []llm.Message{}
-			// Clear screen command will clear the terminal
-			return m, tea.ClearScreen
+			m.transcript = nil
+			m.streamingMessage = nil
+			m.refreshTranscriptView(true)
+			return syncAndReturn(m, tea.ClearScreen, true)
 
 		case tea.KeyEnter:
 			// Send the message on Enter
@@ -966,7 +1195,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.suggestIndex = 0
 				resp := m.handleCommand("/cancel")
 				cmds = append(cmds, func() tea.Msg { return resp })
-				return m, tea.Batch(cmds...)
+				return syncAndReturn(m, tea.Batch(cmds...), false)
 			}
 			if !m.isThinking {
 				if trimmed != "" {
@@ -986,7 +1215,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Execute selected command
 						resp := m.handleCommand(selected)
 						cmds = append(cmds, func() tea.Msg { return resp })
-						return m, tea.Batch(cmds...)
+						return syncAndReturn(m, tea.Batch(cmds...), false)
 					}
 					// Commands take precedence: don't print as user, just execute
 					if strings.HasPrefix(trimmed, "/") {
@@ -1001,12 +1230,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						// Execute command
 						resp := m.handleCommand(trimmed)
 						cmds = append(cmds, func() tea.Msg { return resp })
-						return m, tea.Batch(cmds...)
+						return syncAndReturn(m, tea.Batch(cmds...), false)
 					}
 
 					// Normal or multimodal message
-					// Print user message to stdout
-					cmds = append(cmds, printAboveBlock(renderUserMessage(value)))
+					m.appendTranscript(transcriptUser, value)
 
 					// Add to history for agent context
 					m.historyForAgent = append(m.historyForAgent, llm.Message{
@@ -1038,7 +1266,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
-			return m, tea.Batch(cmds...)
+			return syncAndReturn(m, tea.Batch(cmds...), true)
 		}
 
 	case toolEventMsg:
@@ -1080,7 +1308,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Role:    llm.RoleAssistant,
 					Content: &content,
 				})
-				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, content)))
+				m.appendTranscript(transcriptAssistant, content)
 			}
 			m.streamingMessage = nil
 
@@ -1105,7 +1333,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Role:    llm.RoleAssistant,
 					Content: &finalContent,
 				})
-				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, finalContent)))
+				m.appendTranscript(transcriptAssistant, finalContent)
 			}
 
 			m.tracef("run_end id=%s status=ok mode=stream response_len=%d", runID, len(finalContent))
@@ -1154,7 +1382,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					Role:    llm.RoleAssistant,
 					Content: &partial,
 				})
-				cmds = append(cmds, printAboveBlock(renderAssistantMessage(m.renderer, partial)))
+				m.appendTranscript(transcriptAssistant, partial)
 			}
 
 			if msg.event.Error != nil {
@@ -1163,7 +1391,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						cmds = append(cmds, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?"))
 					}
 				} else {
-					cmds = append(cmds, printAboveBlock(renderErrorMessage(fmt.Sprintf("Error: %v", msg.event.Error))))
+					m.appendTranscript(transcriptError, fmt.Sprintf("Error: %v", msg.event.Error))
 				}
 			}
 
@@ -1190,7 +1418,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Print tool start message immediately
 				argStr := m.formatArguments(msg.event.Tool.Args)
 				toolStartMsg := fmt.Sprintf("🔧 Calling tool: %s %s", msg.event.Tool.Name, argStr)
-				cmds = append(cmds, printAboveLine(renderToolMessage(toolStartMsg)))
+				m.appendTranscript(transcriptTool, toolStartMsg)
 			}
 
 		case agent.EventTypeToolProgress:
@@ -1240,12 +1468,12 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 							prefix = "⏱️"
 						}
 						errorMsg := fmt.Sprintf("%s Tool %s failed: %v", prefix, activeTool.Name, msg.event.Tool.Error)
-						cmds = append(cmds, printAboveLine(renderToolMessage(errorMsg)))
+						m.appendTranscript(transcriptTool, errorMsg)
 					} else {
 						m.tracef("tool_end run=%s tool_id=%s tool=%s status=ok duration_ms=%d", m.activeRunID, msg.event.Tool.ID, activeTool.Name, duration.Milliseconds())
 						// Print success message with duration
 						successMsg := fmt.Sprintf("✅ Tool %s completed in %v", activeTool.Name, duration.Round(time.Millisecond))
-						cmds = append(cmds, printAboveLine(renderToolMessage(successMsg)))
+						m.appendTranscript(transcriptTool, successMsg)
 					}
 				}
 			}
@@ -1255,7 +1483,7 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if !terminal {
 			cmds = append(cmds, m.listenForToolEvents())
 		}
-		return m, tea.Batch(cmds...)
+		return syncAndReturn(m, tea.Batch(cmds...), m.streamingMessage != nil || m.isThinking)
 
 	case borderedResponseMsg:
 		m.isThinking = false
@@ -1284,8 +1512,11 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.isClear {
 			// Clear history for agent context
 			m.historyForAgent = []llm.Message{}
+			m.transcript = nil
+			m.streamingMessage = nil
 			m.textarea.Focus()
-			return m, tea.ClearScreen
+			m.refreshTranscriptView(true)
+			return syncAndReturn(m, tea.ClearScreen, true)
 		}
 
 		if msg.isModelSelect {
@@ -1304,54 +1535,52 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.showModelSelector = true
 			m.textarea.Blur()
 			// Enter alt screen and trigger selector Init to load models
-			return m, tea.Batch(tea.EnterAltScreen, m.selector.Init())
+			return syncAndReturn(m, tea.Batch(tea.EnterAltScreen, m.selector.Init()), false)
 		}
 		// Handle normal messages
 		if msg.err != nil {
 			if errors.Is(msg.err, context.Canceled) {
 				m.textarea.Focus()
 				if m.transientNotice == "" {
-					return m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?")
+					return syncAndReturn(m, m.showTransientNotice("Tool interrupted, what would you like Simple Agent to do instead?"), true)
 				}
-				return m, nil
+				return syncAndReturn(m, nil, false)
 			}
-			// Print error message
-			return m, printAboveBlock(renderErrorMessage(fmt.Sprintf("Error: %v", msg.err)))
+			m.appendTranscript(transcriptError, fmt.Sprintf("Error: %v", msg.err))
+			return syncAndReturn(m, nil, true)
 		} else if msg.content != "" {
 			if msg.isCommand {
-				// Print command output
 				m.textarea.Focus()
-				return m, printAboveBlock(renderCommandMessage(msg.content))
+				m.appendTranscript(transcriptCommand, msg.content)
+				return syncAndReturn(m, nil, true)
 			} else {
-				// Print assistant message
 				content := msg.content
 				m.historyForAgent = append(m.historyForAgent, llm.Message{
 					Role:    llm.RoleAssistant,
 					Content: &content,
 				})
 				m.textarea.Focus()
-				return m, printAboveBlock(renderAssistantMessage(m.renderer, msg.content))
+				m.appendTranscript(transcriptAssistant, msg.content)
+				return syncAndReturn(m, nil, true)
 			}
 		}
 		m.textarea.Focus()
-		return m, nil
+		return syncAndReturn(m, nil, false)
 
 	case selectorCancelMsg:
 		// Close selector, refocus input
 		m.showModelSelector = false
 		m.selector = nil
 		m.textarea.Focus()
-		return m, tea.ExitAltScreen
+		return syncAndReturn(m, tea.ExitAltScreen, false)
 
 	case selectorConfirmMsg:
 		if err := m.switchModel(msg.provider, msg.model); err != nil {
 			m.showModelSelector = false
 			m.selector = nil
 			m.textarea.Focus()
-			return m, tea.Batch(
-				tea.ExitAltScreen,
-				printAboveBlock(renderErrorMessage(fmt.Sprintf("Failed to switch model: %v", err))),
-			)
+			m.appendTranscript(transcriptError, fmt.Sprintf("Failed to switch model: %v", err))
+			return syncAndReturn(m, tea.ExitAltScreen, true)
 		}
 		m.supportsVision = m.computeVisionSupport()
 		m.applyModelDefaults()
@@ -1364,7 +1593,8 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.showModelSelector = false
 		m.selector = nil
 		m.textarea.Focus()
-		return m, tea.Batch(tea.ExitAltScreen, printAboveBlock(renderCommandMessage(fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))))
+		m.appendTranscript(transcriptCommand, fmt.Sprintf("Switched to %s - %s", msg.provider, msg.model))
+		return syncAndReturn(m, tea.ExitAltScreen, true)
 
 	}
 
@@ -1381,14 +1611,14 @@ func (m BorderedTUI) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			// Warn if user pasted image-like content when vision is not supported
 			if detectsImageRef(m.textarea.Value()) {
-				cmds = append(cmds, printAboveBlock(renderCommandMessage("This model does not support vision.")))
+				m.appendTranscript(transcriptCommand, "This model does not support vision.")
 			}
 		}
 		// Update slash-command suggestions
 		m.updateSuggestions()
 	}
 
-	return m, tea.Batch(cmds...)
+	return syncAndReturn(m, tea.Batch(cmds...), false)
 }
 
 func (m BorderedTUI) View() string {
@@ -1397,33 +1627,10 @@ func (m BorderedTUI) View() string {
 		return m.selector.View()
 	}
 	var b strings.Builder
-
-	// Only show the live region: streaming content + spinner + input box
-
-	// Show streaming assistant message while model is generating.
-	if m.streamingMessage != nil {
-		streamContent := streamMessageToContent(m.streamingMessage)
-		if strings.TrimSpace(streamContent) != "" {
-			b.WriteString(renderAssistantMessage(m.renderer, streamContent))
-			b.WriteString("\n\n")
-		}
-	}
-
-	// Show thinking indicator with spinner
-	if m.isThinking {
-		b.WriteString(fmt.Sprintf("%s Thinking...\n\n", m.spinner.View()))
-	} else {
-		// When not thinking, add extra spacing based on textarea height
-		// This prevents border overlap when printing messages
-		extraLines := m.textarea.Height()
-		if extraLines > 1 {
-			// Add extra newlines for multi-line input to push border down
-			for i := 0; i < extraLines; i++ {
-				b.WriteString("\n")
-			}
-		}
-		b.WriteString("\n")
-	}
+	b.WriteString(m.renderHeaderBlock())
+	b.WriteString("\n\n")
+	b.WriteString(m.transcriptView.View())
+	b.WriteString("\n")
 
 	// Create model info string that will appear above the input box.
 	grayStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
@@ -1453,10 +1660,7 @@ func (m BorderedTUI) View() string {
 
 	// Keep live lines strictly within terminal width; wrapped live lines can
 	// break Bubble Tea's redraw bookkeeping when resizing.
-	boxWidth := m.width - 2
-	if boxWidth < 1 {
-		boxWidth = 1
-	}
+	boxWidth := m.inputOuterWidth()
 	modelInfo = truncateToWidth(modelInfo, boxWidth-1)
 
 	// Add the model info line above the input box
@@ -1473,14 +1677,12 @@ func (m BorderedTUI) View() string {
 
 	// Input area with border and prompt
 	inputContent := m.textarea.View()
-	// Add the prompt prefix
-	promptedInput := "> " + inputContent
 
 	// Style the input box with border
 	styledInput := m.borderStyle.
 		PaddingLeft(1).
 		PaddingRight(1).
-		Render(promptedInput)
+		Render(inputContent)
 	b.WriteString(styledInput)
 	b.WriteString("\n") // Ensure cursor moves to next line after box
 
@@ -1510,6 +1712,40 @@ func (m BorderedTUI) View() string {
 	}
 
 	return b.String()
+}
+
+func (m BorderedTUI) renderHeaderBlock() string {
+	headerStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("15")).Bold(true)
+	toolsStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("80"))
+	alertStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("196")).Bold(true)
+
+	line1 := fmt.Sprintf("Simple Agent Go | Model: %s | Provider: %s", m.model, m.provider)
+	if os.Getenv("SIMPLE_AGENT_DEBUG") == "true" {
+		line1 += " | [VERBOSE]"
+	}
+	if m.yoloEnabled {
+		line1 += " | [YOLO]"
+	}
+	line1 = truncateToWidth(line1, m.transcriptWrapWidth())
+
+	registeredToolCount := len(registry.List())
+	toolSummary := ""
+	if m.configuredTools == nil {
+		toolSummary = fmt.Sprintf("Tools: all (%d available)", registeredToolCount)
+	} else {
+		toolSummary = fmt.Sprintf("Tools: %d enabled (%d available)", len(m.configuredTools), registeredToolCount)
+	}
+	line2 := fmt.Sprintf("%s | Commands: /help, /tools, /model, /status, /system, /thinking, /verbose, /trace, /clear, /exit", toolSummary)
+	line2 = truncateToWidth(line2, m.transcriptWrapWidth())
+
+	if strings.Contains(line1, "[YOLO]") {
+		line1 = strings.ReplaceAll(line1, "[YOLO]", alertStyle.Render("[YOLO]"))
+	}
+	if strings.Contains(line1, "[VERBOSE]") {
+		line1 = strings.ReplaceAll(line1, "[VERBOSE]", alertStyle.Render("[VERBOSE]"))
+	}
+
+	return headerStyle.Render(line1) + "\n" + toolsStyle.Render(line2)
 }
 
 func (m *BorderedTUI) showTransientNotice(text string) tea.Cmd {
@@ -2070,7 +2306,7 @@ func (m *BorderedTUI) adjustTextareaHeight() {
 	// Count lines needed considering word wrapping
 	lines := 1
 	currentLineLength := 0
-	textareaWidth := m.width - 8 // Account for borders, padding, and prompt
+	textareaWidth := m.inputInnerWidth() - lipgloss.Width(m.textarea.Prompt)
 	if textareaWidth < 1 {
 		textareaWidth = 1
 	}

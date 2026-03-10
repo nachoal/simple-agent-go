@@ -18,6 +18,7 @@ The PTY smoke now covers:
 - cancel and rollback semantics
 - `--continue` restoring the latest session globally
 - `--resume <session-id>` restoring a specific session and its saved workspace
+- resize-safe TUI redraws via the `tui` package regression tests, including resumed-history and streamed-assistant deduplication after `tea.WindowSizeMsg`
 - `go run ./scripts/run_public_evals --json`
 
 ## Private Local Validation

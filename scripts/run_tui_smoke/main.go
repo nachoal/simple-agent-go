@@ -80,7 +80,7 @@ func firstRun(binary, home, launchDir string) (string, error) {
 	defer func() { _ = ptmx.Close() }()
 
 	reader := newBufferingReader(ptmx)
-	if err := reader.waitFor("Simple Agent Go", 10*time.Second); err != nil {
+	if err := reader.waitFor("Tools:", 10*time.Second); err != nil {
 		return "", err
 	}
 
@@ -95,11 +95,10 @@ func firstRun(binary, home, launchDir string) (string, error) {
 		return "", err
 	}
 
-	after := reader.text()
 	if err := typeAndEnter(ptmx, "what was my last user message?"); err != nil {
 		return "", err
 	}
-	if err := reader.waitForRegexpAfter(assistantNoneRe, after, 10*time.Second); err != nil {
+	if err := reader.waitForRegexp(assistantNoneRe, 10*time.Second); err != nil {
 		return "", err
 	}
 
@@ -144,11 +143,10 @@ func continueRun(binary, home, continueDir, launchDir string) error {
 		return err
 	}
 
-	after := reader.text()
 	if err := typeAndEnter(ptmx, "what was my last user message?"); err != nil {
 		return err
 	}
-	if err := reader.waitForRegexpAfter(assistantLastMessageRe, after, 10*time.Second); err != nil {
+	if err := reader.waitForRegexp(assistantLastMessageRe, 10*time.Second); err != nil {
 		return err
 	}
 
@@ -160,11 +158,10 @@ func continueRun(binary, home, continueDir, launchDir string) error {
 	}
 	time.Sleep(250 * time.Millisecond)
 
-	after = reader.text()
 	if err := typeAndEnter(ptmx, "reply with ok only"); err != nil {
 		return err
 	}
-	if err := reader.waitForRegexpAfter(assistantOKRe, after, 10*time.Second); err != nil {
+	if err := reader.waitForRegexp(assistantOKRe, 10*time.Second); err != nil {
 		return err
 	}
 
@@ -200,11 +197,10 @@ func resumeRun(binary, home, resumeDir, launchDir, sessionID string) error {
 		return err
 	}
 
-	after := reader.text()
 	if err := typeAndEnter(ptmx, "what was my last user message?"); err != nil {
 		return err
 	}
-	if err := reader.waitForRegexpAfter(assistantResumeRe, after, 10*time.Second); err != nil {
+	if err := reader.waitForRegexp(assistantResumeRe, 10*time.Second); err != nil {
 		return err
 	}
 
@@ -259,6 +255,18 @@ func (b *bufferingReader) waitForRegexpAfter(pattern *regexp.Regexp, after strin
 		time.Sleep(50 * time.Millisecond)
 	}
 	return fmt.Errorf("timed out waiting for %q after prompt in output:\n%s", pattern.String(), b.text())
+}
+
+func (b *bufferingReader) waitForRegexp(pattern *regexp.Regexp, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		text := b.text()
+		if pattern.FindStringIndex(text) != nil {
+			return nil
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return fmt.Errorf("timed out waiting for %q in output:\n%s", pattern.String(), b.text())
 }
 
 func (b *bufferingReader) text() string {

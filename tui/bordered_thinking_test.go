@@ -19,7 +19,7 @@ func TestSplitThinkingTrace(t *testing.T) {
 
 func TestRenderAssistantMessageWithThinkingTrace(t *testing.T) {
 	content := "<think>plan</think>\nDone."
-	rendered := renderAssistantMessage(nil, content)
+	rendered := renderAssistantMessage(nil, content, 40)
 
 	if !strings.Contains(rendered, "<thinking traces>") {
 		t.Fatalf("expected thinking trace start tag, got: %q", rendered)
@@ -37,7 +37,7 @@ func TestRenderAssistantMessageWithThinkingTrace(t *testing.T) {
 
 func TestWrapThinkingTraceWrapsLongLine(t *testing.T) {
 	longLine := strings.Repeat("word ", 30)
-	wrapped := wrapThinkingTrace(strings.TrimSpace(longLine))
+	wrapped := wrapThinkingTrace(strings.TrimSpace(longLine), 20)
 
 	if !strings.Contains(wrapped, "\n") {
 		t.Fatalf("expected wrapped output to contain a newline, got: %q", wrapped)

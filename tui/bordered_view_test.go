@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/nachoal/simple-agent-go/agent"
@@ -48,6 +49,10 @@ var ansiRe = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]`)
 
 func stripANSI(s string) string {
 	return ansiRe.ReplaceAllString(s, "")
+}
+
+func normalizeWhitespace(s string) string {
+	return strings.Join(strings.Fields(s), " ")
 }
 
 func TestViewDoesNotOverflowTerminalWidth(t *testing.T) {
@@ -256,5 +261,98 @@ func TestSelectorConfirmPersistsSessionModelAndKeepsHistoryAgent(t *testing.T) {
 	}
 	if loaded.Model != "qwen-32b-dense" {
 		t.Fatalf("expected persisted model qwen-32b-dense, got %q", loaded.Model)
+	}
+}
+
+func TestResizedHistoryViewDoesNotDuplicateAssistantText(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	historyMgr, err := history.NewManager()
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	session, err := historyMgr.StartSession("/tmp/project", "ialab", "qwen3.5-27b-uncensored-q4")
+	if err != nil {
+		t.Fatalf("StartSession: %v", err)
+	}
+
+	user := "hi"
+	assistantMsg := "Hello! I can help with code changes, documentation updates, testing, or repository maintenance."
+	session.Messages = historyMgr.ConvertFromLLMMessages([]llm.Message{
+		{Role: llm.RoleUser, Content: &user},
+		{Role: llm.RoleAssistant, Content: &assistantMsg},
+	})
+	if err := historyMgr.SaveSession(session); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+
+	baseAgent := agent.New(noopLLMClient{}, agent.WithModel(session.Model))
+	historyAgent := agent.NewHistoryAgent(baseAgent, historyMgr, session)
+	tuiModel := NewBorderedTUIWithHistory(noopLLMClient{}, historyAgent, session.Provider, session.Model, map[string]llm.Client{}, nil)
+
+	updatedModel, _ := tuiModel.Update(tea.WindowSizeMsg{Width: 48, Height: 18})
+	updated := updatedModel.(BorderedTUI)
+	view := normalizeWhitespace(stripANSI(updated.View()))
+	if count := strings.Count(view, normalizeWhitespace(assistantMsg)); count != 1 {
+		t.Fatalf("expected assistant history once after first resize, got %d in view: %q", count, view)
+	}
+
+	updatedModel, _ = updated.Update(tea.WindowSizeMsg{Width: 36, Height: 18})
+	updated = updatedModel.(BorderedTUI)
+	view = normalizeWhitespace(stripANSI(updated.View()))
+	if count := strings.Count(view, normalizeWhitespace(assistantMsg)); count != 1 {
+		t.Fatalf("expected assistant history once after second resize, got %d in view: %q", count, view)
+	}
+}
+
+func TestStreamingCompletionDoesNotDuplicateAssistantTextAfterResize(t *testing.T) {
+	ta := textarea.New()
+	m := BorderedTUI{
+		textarea:       ta,
+		model:          "qwen3.5-27b-uncensored-q4",
+		provider:       "ialab",
+		borderStyle:    lipgloss.NewStyle().Border(lipgloss.RoundedBorder()),
+		transcriptView: viewport.New(60, 10),
+		transcript:     []transcriptEntry{},
+	}
+	m.syncLayout(true)
+
+	start := "Hello"
+	updatedModel, _ := m.Update(toolEventMsg{
+		event: agent.StreamEvent{
+			Type: agent.EventTypeMessageStart,
+			Message: &llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: &start,
+			},
+		},
+	})
+	updated := updatedModel.(BorderedTUI)
+
+	final := "Hello there from the streaming assistant."
+	updatedModel, _ = updated.Update(toolEventMsg{
+		event: agent.StreamEvent{
+			Type: agent.EventTypeMessageEnd,
+			Message: &llm.Message{
+				Role:    llm.RoleAssistant,
+				Content: &final,
+			},
+		},
+	})
+	updated = updatedModel.(BorderedTUI)
+
+	view := normalizeWhitespace(stripANSI(updated.View()))
+	if count := strings.Count(view, normalizeWhitespace(final)); count != 1 {
+		t.Fatalf("expected final assistant text once before resize, got %d in view: %q", count, view)
+	}
+
+	updatedModel, _ = updated.Update(tea.WindowSizeMsg{Width: 42, Height: 16})
+	updated = updatedModel.(BorderedTUI)
+	view = normalizeWhitespace(stripANSI(updated.View()))
+	if count := strings.Count(view, normalizeWhitespace(final)); count != 1 {
+		t.Fatalf("expected final assistant text once after resize, got %d in view: %q", count, view)
 	}
 }

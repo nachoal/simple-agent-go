@@ -141,6 +141,7 @@ The TUI provides a delightful chat experience:
 - **⚡ Smart Input** - Auto-expanding textarea that grows with your input
 - **🔄 Live Updates** - Animated spinner during processing
 - **📜 Natural Scrolling** - Messages flow naturally, no jarring screen clears
+- **↔️ Resize Safe** - Transcript and input region reflow cleanly when the terminal size changes
 - **🎛️ Model Switching** - Change models on the fly with `/model`
 
 ### Commands

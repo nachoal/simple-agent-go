@@ -403,11 +403,9 @@ func runTUI(cmd *cobra.Command, args []string) error {
 		fmt.Println("===================")
 	}
 
-	// Print header before starting TUI
-	tui.PrintHeader(provider, model, effectiveToolsForHeader)
-
 	// Create and run TUI (bordered version with providers and history)
 	tuiModel := tui.NewBorderedTUIWithHistory(llmClient, historyAgent, provider, model, providers, configManager)
+	tuiModel.SetConfiguredTools(effectiveToolsForHeader)
 	tuiModel.SetClientFactory(func(providerName, modelName string) (llm.Client, error) {
 		return createLLMClient(providerName, modelName)
 	})
